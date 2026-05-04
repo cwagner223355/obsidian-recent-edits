@@ -1,8 +1,10 @@
 import {
   App,
+  FileSystemAdapter,
   ItemView,
   Menu,
   Modal,
+  Notice,
   Plugin,
   PluginSettingTab,
   Setting,
@@ -41,6 +43,7 @@ type EditSource = "obsidian" | "external";
 export default class RecentEditsPlugin extends Plugin {
   settings: RecentEditsSettings = DEFAULT_SETTINGS;
   editSources: Record<string, EditSource> = {};
+  dismissedAt: Record<string, number> = {};
   private editorChangeTimes = new Map<string, number>();
   private recentFileOpens = new Map<string, number>();
   private saveDataTimer: number | null = null;
@@ -109,9 +112,17 @@ export default class RecentEditsPlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file instanceof TFile && this.editSources[file.path]) {
-          delete this.editSources[file.path];
-          this.scheduleSaveData();
+        if (file instanceof TFile) {
+          let changed = false;
+          if (this.editSources[file.path]) {
+            delete this.editSources[file.path];
+            changed = true;
+          }
+          if (this.dismissedAt[file.path] !== undefined) {
+            delete this.dismissedAt[file.path];
+            changed = true;
+          }
+          if (changed) this.scheduleSaveData();
         }
         this.refreshViews();
       })
@@ -119,10 +130,19 @@ export default class RecentEditsPlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (file instanceof TFile && this.editSources[oldPath]) {
-          this.editSources[file.path] = this.editSources[oldPath];
-          delete this.editSources[oldPath];
-          this.scheduleSaveData();
+        if (file instanceof TFile) {
+          let changed = false;
+          if (this.editSources[oldPath]) {
+            this.editSources[file.path] = this.editSources[oldPath];
+            delete this.editSources[oldPath];
+            changed = true;
+          }
+          if (this.dismissedAt[oldPath] !== undefined) {
+            this.dismissedAt[file.path] = this.dismissedAt[oldPath];
+            delete this.dismissedAt[oldPath];
+            changed = true;
+          }
+          if (changed) this.scheduleSaveData();
         }
         this.refreshViews();
       })
@@ -149,6 +169,16 @@ export default class RecentEditsPlugin extends Plugin {
 
   isExternalEdit(file: TFile): boolean {
     return this.editSources[file.path] === "external";
+  }
+
+  isDismissed(file: TFile): boolean {
+    return this.dismissedAt[file.path] === file.stat.mtime;
+  }
+
+  dismissFile(file: TFile) {
+    this.dismissedAt[file.path] = file.stat.mtime;
+    this.scheduleSaveData();
+    this.refreshViews();
   }
 
   async activateView() {
@@ -187,8 +217,12 @@ export default class RecentEditsPlugin extends Plugin {
     const editSources = (raw._editSources as
       | Record<string, EditSource>
       | undefined) ?? {};
+    const dismissedAt = (raw._dismissedAt as
+      | Record<string, number>
+      | undefined) ?? {};
     const settingsBlob = { ...raw };
     delete (settingsBlob as Record<string, unknown>)._editSources;
+    delete (settingsBlob as Record<string, unknown>)._dismissedAt;
 
     this.settings = Object.assign(
       {},
@@ -196,6 +230,7 @@ export default class RecentEditsPlugin extends Plugin {
       settingsBlob as Partial<RecentEditsSettings>
     );
     this.editSources = editSources;
+    this.dismissedAt = dismissedAt;
   }
 
   async saveSettings() {
@@ -215,18 +250,35 @@ export default class RecentEditsPlugin extends Plugin {
 
   private async persistData() {
     const cutoff = Date.now() - this.settings.lookbackDays * 86400000;
-    const pruned: Record<string, EditSource> = {};
+    const prunedSources: Record<string, EditSource> = {};
     for (const [path, src] of Object.entries(this.editSources)) {
       const file = this.app.vault.getAbstractFileByPath(path);
       if (file instanceof TFile && file.stat.mtime >= cutoff) {
-        pruned[path] = src;
+        prunedSources[path] = src;
       }
     }
-    this.editSources = pruned;
+    this.editSources = prunedSources;
+
+    // Prune dismissals: drop entries for files that no longer exist, are
+    // outside the lookback window, or whose mtime has advanced past the
+    // dismissed mtime (the dismissal is stale and would auto-show anyway).
+    const prunedDismissed: Record<string, number> = {};
+    for (const [path, mtime] of Object.entries(this.dismissedAt)) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (
+        file instanceof TFile &&
+        file.stat.mtime >= cutoff &&
+        file.stat.mtime === mtime
+      ) {
+        prunedDismissed[path] = mtime;
+      }
+    }
+    this.dismissedAt = prunedDismissed;
 
     await this.saveData({
       ...this.settings,
       _editSources: this.editSources,
+      _dismissedAt: this.dismissedAt,
     });
   }
 }
@@ -334,6 +386,17 @@ class RecentEditsView extends ItemView {
         })
     );
 
+    menu.addSeparator();
+
+    menu.addItem((item) =>
+      item
+        .setTitle("Clear from list")
+        .setIcon("lucide-eye-off")
+        .onClick(() => {
+          this.plugin.dismissFile(file);
+        })
+    );
+
     menu.showAtMouseEvent(evt);
   }
 
@@ -397,6 +460,8 @@ class RecentEditsView extends ItemView {
           if (matchesFolder(f.path, bg)) return false;
         }
       }
+
+      if (this.plugin.isDismissed(f)) return false;
       return true;
     });
 
@@ -534,7 +599,22 @@ class RecentEditsView extends ItemView {
     const folderPath = file.parent ? file.parent.path : "";
     const displayPath =
       folderPath === "" || folderPath === "/" ? "/" : folderPath + "/";
-    info.createDiv({ cls: "recent-edits-row-path", text: displayPath });
+    const pathEl = info.createDiv({
+      cls: "recent-edits-row-path",
+      text: displayPath,
+    });
+    pathEl.setAttribute("aria-label", "Click to copy absolute path");
+    pathEl.addEventListener("click", async (evt) => {
+      evt.stopPropagation();
+      const adapter = this.app.vault.adapter;
+      if (adapter instanceof FileSystemAdapter) {
+        const fullPath = adapter.getFullPath(file.path);
+        await navigator.clipboard.writeText(fullPath);
+        new Notice("Path copied");
+      } else {
+        new Notice("Absolute path unavailable on this platform");
+      }
+    });
 
     row.createSpan({
       cls: "recent-edits-row-time",

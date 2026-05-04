@@ -183,6 +183,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+  transition: color 80ms ease;
+}
+
+.recent-edits-row-path:hover {
+  color: var(--text-normal);
+}
+
+.recent-edits-row-path:active {
+  color: var(--text-accent);
 }
 
 .recent-edits-row-time {
