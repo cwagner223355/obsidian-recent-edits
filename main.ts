@@ -61,6 +61,7 @@ export default class RecentEditsPlugin extends Plugin {
   private editorChangeTimes = new Map<string, number>();
   private recentFileOpens = new Map<string, number>();
   private saveDataTimer: number | null = null;
+  private midnightTimer: number | null = null;
 
   async onload() {
     await this.loadSettings();
@@ -184,6 +185,40 @@ export default class RecentEditsPlugin extends Plugin {
     );
 
     this.addSettingTab(new RecentEditsSettingTab(this.app, this));
+
+    // Re-render when the calendar day rolls over so the "Today" group reflects
+    // the new day even when Obsidian was left open overnight with no vault
+    // activity to trigger an event-driven refresh.
+    this.scheduleMidnightRefresh();
+  }
+
+  onunload() {
+    if (this.midnightTimer !== null) {
+      window.clearTimeout(this.midnightTimer);
+      this.midnightTimer = null;
+    }
+  }
+
+  private scheduleMidnightRefresh() {
+    if (this.midnightTimer !== null) {
+      window.clearTimeout(this.midnightTimer);
+    }
+    const now = new Date();
+    const nextMidnight = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() + 1,
+      0,
+      0,
+      0,
+      250
+    );
+    const delay = nextMidnight.getTime() - now.getTime();
+    this.midnightTimer = window.setTimeout(() => {
+      this.midnightTimer = null;
+      this.refreshViews();
+      this.scheduleMidnightRefresh();
+    }, delay);
   }
 
   private classifyEdit(file: TFile, isCreate: boolean) {
@@ -198,10 +233,9 @@ export default class RecentEditsPlugin extends Plugin {
     const lastOpen = this.recentFileOpens.get(file.path) ?? 0;
     const recentFileOpen = Date.now() - lastOpen < FILE_OPEN_WINDOW_MS;
     const isObsidian = recentEditorChange || isEmptyCreate || recentFileOpen;
-    this.editSources[file.path] = isObsidian ? "obsidian" : "external";
-    // editTimes records the canonical mtime so the panel orders files by
-    // their original edit time, not by sync-receipt time on devices that
-    // received the file via Obsidian Sync.
+
+    // Both maps move in lockstep: a write to editSources is also a write to
+    // editTimes. We only persist when this device originated the edit.
     //
     // Obsidian classifications always reflect a local edit — record them.
     //
@@ -210,21 +244,22 @@ export default class RecentEditsPlugin extends Plugin {
     // mobile they're almost always a sync delivery from another device
     // carrying a sync-receipt-time stat.mtime. We split by platform:
     //
-    //   Desktop: write editTimes for external edits so the panel reflects
-    //   the actual edit time. Guard against the rare case where a sync
-    //   delivery from mobile arrives — if a canonical value already exists
-    //   and stat.mtime is within ~60s of it, treat as sync delivery and
-    //   skip to preserve the canonical.
+    //   Desktop: record an external edit as the local canonical when we're
+    //   confident it's a real local write. Guard against the rare case
+    //   where a sync delivery from mobile arrives — if a canonical value
+    //   already exists and stat.mtime is within ~60s of it, treat as sync
+    //   delivery and skip to preserve the canonical.
     //
     //   Mobile: never write on external. A sync delivery would otherwise
-    //   overwrite Mac's canonical with sync-receipt time.
+    //   overwrite Mac's canonical (both source and time) with sync data.
+    let isLocallyOriginated = false;
     if (isObsidian) {
-      this.editTimes[file.path] = file.stat.mtime;
+      isLocallyOriginated = true;
     } else if (Platform.isDesktop) {
       const persisted = this.editTimes[file.path];
       if (persisted === undefined) {
         // No canonical yet — safe to record.
-        this.editTimes[file.path] = file.stat.mtime;
+        isLocallyOriginated = true;
       } else {
         const mtimeAdvance = file.stat.mtime - persisted;
         const recentLocalEditorChange =
@@ -236,17 +271,22 @@ export default class RecentEditsPlugin extends Plugin {
         //   (2) This file was actively being edited in Obsidian on this
         //       device recently — Mac → Claude follow-ups land here even
         //       when the mtime advance is small.
-        if (
-          mtimeAdvance > EXTERNAL_SYNC_GUARD_MS ||
-          recentLocalEditorChange
-        ) {
-          this.editTimes[file.path] = file.stat.mtime;
+        if (mtimeAdvance > EXTERNAL_SYNC_GUARD_MS || recentLocalEditorChange) {
+          isLocallyOriginated = true;
         }
         // Otherwise: small mtime advance, no recent local Obsidian
         // activity on this file — preserve canonical (probably sync).
       }
     }
-    this.scheduleSaveData();
+
+    if (isLocallyOriginated) {
+      this.editSources[file.path] = isObsidian ? "obsidian" : "external";
+      this.editTimes[file.path] = file.stat.mtime;
+      this.scheduleSaveData();
+    }
+    // Else: sync delivery (or indistinguishable). Preserve the originating
+    // device's source and canonical mtime; the synced data.json carries
+    // truth.
   }
 
   isExternalEdit(file: TFile): boolean {
