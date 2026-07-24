@@ -62,6 +62,7 @@ export default class RecentEditsPlugin extends Plugin {
   private recentFileOpens = new Map<string, number>();
   private saveDataTimer: number | null = null;
   private midnightTimer: number | null = null;
+  private createTimers = new Set<number>();
 
   async onload() {
     await this.loadSettings();
@@ -81,6 +82,14 @@ export default class RecentEditsPlugin extends Plugin {
       callback: () => { void this.activateView(); },
     });
 
+    // Register with Page Preview so this source appears in its settings and
+    // honors plain-hover (defaultMod: false); without this the hover-preview
+    // toggle silently requires the Ctrl/Cmd modifier.
+    this.registerHoverLinkSource(HOVER_SOURCE, {
+      display: "Recent Edits",
+      defaultMod: false,
+    });
+
     this.registerEvent(
       this.app.workspace.on("editor-change", (_editor, info) => {
         const file = (info as { file?: TFile | null })?.file;
@@ -98,23 +107,34 @@ export default class RecentEditsPlugin extends Plugin {
       })
     );
 
-    this.registerEvent(
-      this.app.vault.on("create", (file) => {
-        if (file instanceof TFile) {
-          // Defer classification so workspace `file-open` has time to fire.
-          // Core-plugin flows (Daily Notes, Templater, "New note from
-          // template") create the file then open it; the file-open is
-          // our signal that this was an Obsidian-internal create.
-          window.setTimeout(() => {
-            if (this.app.vault.getAbstractFileByPath(file.path) === file) {
-              this.classifyEdit(file, true);
-              this.refreshViews();
-            }
-          }, CREATE_CLASSIFY_DELAY_MS);
-        }
-        this.refreshViews();
-      })
-    );
+    // Register the create handler at layout-ready, not in onload. Obsidian
+    // fires `create` for every existing file during vault initialization, so a
+    // handler registered in onload would classify the entire vault at startup
+    // (marking every recent file external on a fresh install) and spawn a
+    // deferred timer per file. Registering after layout-ready skips that storm;
+    // the layoutReady guard is a backstop for the pre-ready window.
+    this.app.workspace.onLayoutReady(() => {
+      this.registerEvent(
+        this.app.vault.on("create", (file) => {
+          if (!this.app.workspace.layoutReady) return;
+          if (file instanceof TFile) {
+            // Defer classification so workspace `file-open` has time to fire.
+            // Core-plugin flows (Daily Notes, Templater, "New note from
+            // template") create the file then open it; the file-open is
+            // our signal that this was an Obsidian-internal create.
+            const timer = window.setTimeout(() => {
+              this.createTimers.delete(timer);
+              if (this.app.vault.getAbstractFileByPath(file.path) === file) {
+                this.classifyEdit(file, true);
+                this.refreshViews();
+              }
+            }, CREATE_CLASSIFY_DELAY_MS);
+            this.createTimers.add(timer);
+          }
+          this.refreshViews();
+        })
+      );
+    });
 
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
@@ -196,6 +216,17 @@ export default class RecentEditsPlugin extends Plugin {
     if (this.midnightTimer !== null) {
       window.clearTimeout(this.midnightTimer);
       this.midnightTimer = null;
+    }
+    for (const timer of this.createTimers) {
+      window.clearTimeout(timer);
+    }
+    this.createTimers.clear();
+    if (this.saveDataTimer !== null) {
+      window.clearTimeout(this.saveDataTimer);
+      this.saveDataTimer = null;
+      // Flush any debounced edit metadata so the pending write doesn't fire on
+      // this dead instance and race the next instance's load.
+      void this.persistData();
     }
   }
 
@@ -354,11 +385,23 @@ export default class RecentEditsPlugin extends Plugin {
     delete (settingsBlob as Record<string, unknown>)._editTimes;
     delete (settingsBlob as Record<string, unknown>)._dismissedAt;
 
-    this.settings = Object.assign(
-      {},
-      DEFAULT_SETTINGS,
-      settingsBlob as Partial<RecentEditsSettings>
-    );
+    // Copy only known settings keys so stray or legacy keys in data.json aren't
+    // merged into settings and re-persisted forever.
+    const blob = settingsBlob as Record<string, unknown>;
+    const settings: RecentEditsSettings = { ...DEFAULT_SETTINGS };
+    for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof RecentEditsSettings)[]) {
+      if (blob[key] !== undefined) {
+        (settings as unknown as Record<string, unknown>)[key] = blob[key];
+      }
+    }
+    // One-time migration: pre-1.0 stored the indicator color as claudeEditColor.
+    if (
+      blob.externalEditColor === undefined &&
+      typeof blob.claudeEditColor === "string"
+    ) {
+      settings.externalEditColor = blob.claudeEditColor;
+    }
+    this.settings = settings;
     this.editSources = editSources;
     this.editTimes = editTimes;
     this.dismissedAt = dismissedAt;
@@ -368,6 +411,15 @@ export default class RecentEditsPlugin extends Plugin {
   // data.json without disturbing in-memory settings. Used to pick up
   // changes synced in from another device.
   async reloadEditMetadata() {
+    // Flush any debounced local writes first. Otherwise a reload triggered
+    // mid-batch would read a stale data.json and replace in-memory
+    // classifications not yet persisted, then the pending save would write the
+    // stale state back to disk.
+    if (this.saveDataTimer !== null) {
+      window.clearTimeout(this.saveDataTimer);
+      this.saveDataTimer = null;
+      await this.persistData();
+    }
     const raw = ((await this.loadData()) as Record<string, unknown>) ?? {};
     const editSources = (raw._editSources as
       | Record<string, EditSource>
@@ -399,7 +451,20 @@ export default class RecentEditsPlugin extends Plugin {
     }, 500);
   }
 
+  // Drop stale entries from the in-memory signal maps so they don't grow
+  // unbounded over a long session. Kept above each map's read window.
+  private pruneSignalMaps() {
+    const now = Date.now();
+    for (const [path, t] of this.editorChangeTimes) {
+      if (now - t > ACTIVE_LOCAL_FILE_WINDOW_MS) this.editorChangeTimes.delete(path);
+    }
+    for (const [path, t] of this.recentFileOpens) {
+      if (now - t > FILE_OPEN_WINDOW_MS) this.recentFileOpens.delete(path);
+    }
+  }
+
   private async persistData() {
+    this.pruneSignalMaps();
     const cutoff = Date.now() - this.settings.lookbackDays * 86400000;
     // For pruning, use whichever timestamp is later: local stat.mtime or
     // the stored canonical mtime. On mobile, stat.mtime may be sync time
@@ -536,7 +601,9 @@ class RecentEditsView extends ItemView {
         .setTitle("Copy path")
         .setIcon("lucide-copy")
         .onClick(() => {
-          void navigator.clipboard.writeText(file.path);
+          void navigator.clipboard
+            .writeText(file.path)
+            .then(() => {}, () => new Notice("Copy failed"));
         })
     );
 
@@ -585,8 +652,11 @@ class RecentEditsView extends ItemView {
     let found: WorkspaceLeaf | null = null;
     this.app.workspace.iterateAllLeaves((leaf) => {
       if (found) return;
-      const view = leaf.view as { file?: TFile };
-      if (view.file === file) {
+      // Match on the leaf's view state, not leaf.view: restored background tabs
+      // are DeferredView until made visible and carry no `.file`, so a
+      // leaf.view check misses them and clicking a row opens a duplicate tab.
+      const state = leaf.getViewState().state as { file?: string } | undefined;
+      if (state?.file === file.path) {
         found = leaf;
       }
     });
@@ -784,18 +854,26 @@ class RecentEditsView extends ItemView {
       text: displayPath,
     });
 
+    // The absolute-path copy only works on desktop (FileSystemAdapter), so
+    // don't render a dead affordance on mobile.
     const affordance = this.plugin.settings.pathCopyAffordance;
-    const showButton = affordance === "button" || affordance === "both";
+    const canCopyAbsolute = Platform.isDesktopApp;
+    const showButton =
+      canCopyAbsolute && (affordance === "button" || affordance === "both");
     const pathTextIsCopyTarget =
-      affordance === "path-text" || affordance === "both";
+      canCopyAbsolute && (affordance === "path-text" || affordance === "both");
 
     const copyAbsolutePath = async (evt: Event) => {
       evt.stopPropagation();
       const adapter = this.app.vault.adapter;
       if (adapter instanceof FileSystemAdapter) {
         const fullPath = adapter.getFullPath(file.path);
-        await navigator.clipboard.writeText(fullPath);
-        new Notice("Path copied");
+        try {
+          await navigator.clipboard.writeText(fullPath);
+          new Notice("Path copied");
+        } catch {
+          new Notice("Copy failed");
+        }
       } else {
         new Notice("Absolute path unavailable on this platform");
       }
@@ -892,6 +970,19 @@ class RecentEditsSettingTab extends PluginSettingTab {
         text.inputEl.type = "number";
         text.inputEl.min = "1";
         text.inputEl.max = "90";
+        // Clamp empty or out-of-range input on blur and re-sync the field so
+        // the displayed value never diverges from the persisted one.
+        text.inputEl.addEventListener("blur", () => {
+          const n = parseInt(text.inputEl.value, 10);
+          const clamped = isNaN(n)
+            ? this.plugin.settings.lookbackDays
+            : Math.min(90, Math.max(1, n));
+          if (clamped !== this.plugin.settings.lookbackDays) {
+            this.plugin.settings.lookbackDays = clamped;
+            void this.plugin.saveSettings();
+          }
+          text.setValue(String(this.plugin.settings.lookbackDays));
+        });
       });
 
     new Setting(containerEl)
@@ -1177,7 +1268,11 @@ class ConfirmDeleteModal extends Modal {
     titleEl.setText("Delete file");
 
     contentEl.createEl("p", {
-      text: `Move "${this.file.path}" to system trash?`,
+      text: `Delete "${this.file.path}"?`,
+    });
+    contentEl.createEl("p", {
+      cls: "recent-edits-modal-note",
+      text: "This follows your Files & Links deleted-file preference (system trash, .trash folder, or permanent delete).",
     });
 
     const buttonRow = contentEl.createDiv({ cls: "recent-edits-modal-buttons" });

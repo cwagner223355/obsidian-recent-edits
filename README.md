@@ -20,7 +20,7 @@ Recent Edits closes that gap. It shows what changed, when it changed, and visual
 - Configurable indicator dot for edits that came from outside Obsidian's editor
 - "Background folders" toggle: hide noisy folders by default, reveal inline via toggle
 - "Excluded folders" to permanently hide certain edits
-- Click the folder path on a row to copy the file's absolute filesystem path (useful for handing off to AI tools or CLI)
+- Copy any file's absolute filesystem path from its row for handing off to AI tools or the CLI (desktop only); the copy control can be a button, the folder-path text, or both
 - Right-click → **Clear from list** to dismiss a file from the panel until its next edit
 - Optional hover preview (uses the Page Preview core plugin)
 - Includes `.md`, `.canvas`, and `.base` files
@@ -42,8 +42,6 @@ Recent Edits closes that gap. It shows what changed, when it changed, and visual
 3. Paste: `cwagner223355/obsidian-recent-edits`
 4. Enable **Recent Edits** in Community plugins.
 
-Knox Timeline is not yet in the Community plugins directory.
-
 ## Settings
 
 | Setting | Type | Default | Description |
@@ -51,6 +49,7 @@ Knox Timeline is not yet in the Community plugins directory.
 | Lookback days | number | `7` | How many days back to include. Range 1–90. |
 | Hover preview | toggle | off | Show Obsidian's page preview popup on hover. Requires the Page Preview core plugin. |
 | External edit indicator color | color | `#D97757` | Color of the dot shown next to externally-edited files. |
+| Copy absolute path affordance | dropdown | Button above the time | Which control copies a row's absolute filesystem path: a button, the folder-path text, or both (desktop only). |
 | Background folders | folder list | `[]` | Hidden by default; revealed by the per-day-header toggle. Useful for files that update often but you only check occasionally. |
 | Excluded folders | folder list | `[]` | Hidden completely. Dot-prefixed folders (`.obsidian`, `.trash`) are always excluded regardless. |
 
@@ -60,8 +59,8 @@ Knox Timeline is not yet in the Community plugins directory.
 |---|---|
 | Filename | Open the file. Activates an existing tab if open; otherwise opens a new one. |
 | Cmd/Ctrl-click filename | Always open in a new tab. |
-| Folder path | Copy the file's absolute filesystem path to the clipboard. |
-| Right-click anywhere on the row | Open in new tab / split / window, Copy path (vault-relative), Reveal in Finder, Rename, Delete, Clear from list. |
+| Copy-path button / folder path (per the affordance setting) | Copy the file's absolute filesystem path to the clipboard (desktop only). |
+| Right-click anywhere on the row | Open in new tab / split / window, Copy path (vault-relative), Rename, Delete, Clear from list. |
 | Day header | Collapse or expand the day's group. |
 | **More** / **Less** pill on a day header | Toggle whether files in your background folders are shown. Only appears if you've configured background folders. |
 
