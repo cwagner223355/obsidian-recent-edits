@@ -840,7 +840,7 @@ class RecentEditsView extends ItemView {
     }
 
     const info = row.createDiv({ cls: "recent-edits-row-info" });
-    const name = info.createEl("div", {
+    const name = info.createDiv({
       cls: "recent-edits-row-name",
       text: file.basename,
     });
