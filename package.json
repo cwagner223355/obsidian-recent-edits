@@ -1,6 +1,6 @@
 {
   "name": "recent-edits",
-  "version": "1.2.5",
+  "version": "1.3.0",
   "description": "Shows files modified in the last N days, grouped by day. Marks edits made from outside Obsidian (filesystem writes, sync, plugins) with a configurable indicator.",
   "main": "main.js",
   "scripts": {
