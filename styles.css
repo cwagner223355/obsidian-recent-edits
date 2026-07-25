@@ -87,6 +87,13 @@
   display: none;
 }
 
+/* Hover mode: days render collapsed but reveal their files on mouse-over. */
+.recent-edits-container[data-day-mode="hover"]
+  .recent-edits-group[data-collapsed="true"]:hover
+  .recent-edits-day-files {
+  display: flex;
+}
+
 .recent-edits-group[data-collapsed="true"] .recent-edits-chevron {
   transform: rotate(-90deg);
 }
@@ -128,6 +135,31 @@
   font-size: var(--font-ui-smaller);
 }
 
+.recent-edits-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  margin-left: 4px;
+}
+
+.recent-edits-control-btn.clickable-icon {
+  color: var(--text-muted);
+  padding: 2px;
+  height: auto;
+  width: auto;
+}
+
+.recent-edits-control-btn.clickable-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.recent-edits-empty-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+
 .recent-edits-day-files {
   padding-left: 4px;
   display: flex;
@@ -167,7 +199,16 @@
   min-width: 0;
 }
 
+.recent-edits-row-nameline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .recent-edits-row-name {
+  flex: 0 1 auto;
+  min-width: 0;
   font-weight: 500;
   font-size: var(--font-ui-small);
   color: var(--text-normal);
@@ -214,6 +255,25 @@
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+.recent-edits-size-delta {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.75;
+}
+
+.recent-edits-size-delta svg {
+  width: 12px;
+  height: 12px;
+}
+
+.recent-edits-size-delta.is-up {
+  color: var(--color-green);
+}
+
+.recent-edits-size-delta.is-down {
+  color: var(--color-red);
 }
 
 .recent-edits-row-copy-btn {

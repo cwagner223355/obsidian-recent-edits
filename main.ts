@@ -17,6 +17,7 @@ import {
 } from "obsidian";
 
 type PathCopyAffordance = "button" | "path-text" | "both";
+type DayOpenMode = "open" | "collapsed" | "hover";
 
 interface RecentEditsSettings {
   excludedFolders: string[];
@@ -25,6 +26,9 @@ interface RecentEditsSettings {
   enableHoverPreview: boolean;
   externalEditColor: string;
   pathCopyAffordance: PathCopyAffordance;
+  showSizeIndicator: boolean;
+  sizeDeltaThresholdKb: number;
+  dayOpenMode: DayOpenMode;
 }
 
 const DEFAULT_SETTINGS: RecentEditsSettings = {
@@ -34,6 +38,9 @@ const DEFAULT_SETTINGS: RecentEditsSettings = {
   enableHoverPreview: false,
   externalEditColor: "#D97757",
   pathCopyAffordance: "button",
+  showSizeIndicator: false,
+  sizeDeltaThresholdKb: 10,
+  dayOpenMode: "open",
 };
 
 const VIEW_TYPE_RECENT_EDITS = "recent-edits-view";
@@ -58,6 +65,8 @@ export default class RecentEditsPlugin extends Plugin {
   editSources: Record<string, EditSource> = {};
   editTimes: Record<string, number> = {};
   dismissedAt: Record<string, number> = {};
+  editSizes: Record<string, number> = {};
+  sizeDeltas: Record<string, "up" | "down"> = {};
   private editorChangeTimes = new Map<string, number>();
   private recentFileOpens = new Map<string, number>();
   private saveDataTimer: number | null = null;
@@ -161,6 +170,14 @@ export default class RecentEditsPlugin extends Plugin {
             delete this.dismissedAt[file.path];
             changed = true;
           }
+          if (this.editSizes[file.path] !== undefined) {
+            delete this.editSizes[file.path];
+            changed = true;
+          }
+          if (this.sizeDeltas[file.path] !== undefined) {
+            delete this.sizeDeltas[file.path];
+            changed = true;
+          }
           if (changed) this.scheduleSaveData();
         }
         this.refreshViews();
@@ -184,6 +201,16 @@ export default class RecentEditsPlugin extends Plugin {
           if (this.dismissedAt[oldPath] !== undefined) {
             this.dismissedAt[file.path] = this.dismissedAt[oldPath];
             delete this.dismissedAt[oldPath];
+            changed = true;
+          }
+          if (this.editSizes[oldPath] !== undefined) {
+            this.editSizes[file.path] = this.editSizes[oldPath];
+            delete this.editSizes[oldPath];
+            changed = true;
+          }
+          if (this.sizeDeltas[oldPath] !== undefined) {
+            this.sizeDeltas[file.path] = this.sizeDeltas[oldPath];
+            delete this.sizeDeltas[oldPath];
             changed = true;
           }
           if (changed) this.scheduleSaveData();
@@ -313,11 +340,31 @@ export default class RecentEditsPlugin extends Plugin {
     if (isLocallyOriginated) {
       this.editSources[file.path] = isObsidian ? "obsidian" : "external";
       this.editTimes[file.path] = file.stat.mtime;
+      this.recordSizeDelta(file);
       this.scheduleSaveData();
     }
     // Else: sync delivery (or indistinguishable). Preserve the originating
     // device's source and canonical mtime; the synced data.json carries
     // truth.
+  }
+
+  // Records the direction of this edit's size change vs. the file's previously
+  // recorded size, then stores the new size. Called only for locally
+  // originated edits so sync deliveries don't produce spurious deltas.
+  private recordSizeDelta(file: TFile) {
+    const prev = this.editSizes[file.path];
+    if (prev !== undefined) {
+      const diff = file.stat.size - prev;
+      const threshold = this.settings.sizeDeltaThresholdKb * 1024;
+      if (diff > 0 && diff >= threshold) this.sizeDeltas[file.path] = "up";
+      else if (diff < 0 && -diff >= threshold) this.sizeDeltas[file.path] = "down";
+      else delete this.sizeDeltas[file.path];
+    }
+    this.editSizes[file.path] = file.stat.size;
+  }
+
+  sizeDelta(file: TFile): "up" | "down" | undefined {
+    return this.sizeDeltas[file.path];
   }
 
   isExternalEdit(file: TFile): boolean {
@@ -380,10 +427,18 @@ export default class RecentEditsPlugin extends Plugin {
     const dismissedAt = (raw._dismissedAt as
       | Record<string, number>
       | undefined) ?? {};
+    const editSizes = (raw._editSizes as
+      | Record<string, number>
+      | undefined) ?? {};
+    const sizeDeltas = (raw._sizeDeltas as
+      | Record<string, "up" | "down">
+      | undefined) ?? {};
     const settingsBlob = { ...raw };
     delete (settingsBlob as Record<string, unknown>)._editSources;
     delete (settingsBlob as Record<string, unknown>)._editTimes;
     delete (settingsBlob as Record<string, unknown>)._dismissedAt;
+    delete (settingsBlob as Record<string, unknown>)._editSizes;
+    delete (settingsBlob as Record<string, unknown>)._sizeDeltas;
 
     // Copy only known settings keys so stray or legacy keys in data.json aren't
     // merged into settings and re-persisted forever.
@@ -405,6 +460,8 @@ export default class RecentEditsPlugin extends Plugin {
     this.editSources = editSources;
     this.editTimes = editTimes;
     this.dismissedAt = dismissedAt;
+    this.editSizes = editSizes;
+    this.sizeDeltas = sizeDeltas;
   }
 
   // Re-reads persisted edit metadata (sources, times, dismissals) from
@@ -430,9 +487,17 @@ export default class RecentEditsPlugin extends Plugin {
     const dismissedAt = (raw._dismissedAt as
       | Record<string, number>
       | undefined) ?? {};
+    const editSizes = (raw._editSizes as
+      | Record<string, number>
+      | undefined) ?? {};
+    const sizeDeltas = (raw._sizeDeltas as
+      | Record<string, "up" | "down">
+      | undefined) ?? {};
     this.editSources = editSources;
     this.editTimes = editTimes;
     this.dismissedAt = dismissedAt;
+    this.editSizes = editSizes;
+    this.sizeDeltas = sizeDeltas;
     this.refreshViews();
   }
 
@@ -510,11 +575,29 @@ export default class RecentEditsPlugin extends Plugin {
     }
     this.dismissedAt = prunedDismissed;
 
+    const prunedSizes: Record<string, number> = {};
+    for (const [path, size] of Object.entries(this.editSizes)) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (file instanceof TFile && freshest(path, file) >= cutoff) {
+        prunedSizes[path] = size;
+      }
+    }
+    this.editSizes = prunedSizes;
+
+    // A size delta is only meaningful alongside a retained size entry.
+    const prunedDeltas: Record<string, "up" | "down"> = {};
+    for (const [path, dir] of Object.entries(this.sizeDeltas)) {
+      if (this.editSizes[path] !== undefined) prunedDeltas[path] = dir;
+    }
+    this.sizeDeltas = prunedDeltas;
+
     await this.saveData({
       ...this.settings,
       _editSources: this.editSources,
       _editTimes: this.editTimes,
       _dismissedAt: this.dismissedAt,
+      _editSizes: this.editSizes,
+      _sizeDeltas: this.sizeDeltas,
     });
   }
 }
@@ -735,6 +818,66 @@ class RecentEditsView extends ItemView {
     return groups;
   }
 
+  // Renders the day-mode + gear controls into a header element. Placed on the
+  // top day header (or the empty-state bar) so they share an existing row and
+  // cost no extra vertical space. Re-drawn on every render, so cycleDayMode
+  // just re-renders to update the icon.
+  private renderControls(target: HTMLElement) {
+    const controls = target.createDiv({ cls: "recent-edits-controls" });
+
+    const mode = this.plugin.settings.dayOpenMode;
+    const modeBtn = controls.createDiv({
+      cls: "clickable-icon recent-edits-control-btn",
+      attr: { role: "button", tabindex: "0", "aria-label": dayModeLabel(mode) },
+    });
+    setIcon(modeBtn, dayModeIcon(mode));
+    const cycle = (evt: Event) => {
+      evt.stopPropagation();
+      void this.cycleDayMode();
+    };
+    modeBtn.addEventListener("click", cycle);
+    modeBtn.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        cycle(evt);
+      }
+    });
+
+    const gearBtn = controls.createDiv({
+      cls: "clickable-icon recent-edits-control-btn",
+      attr: { role: "button", tabindex: "0", "aria-label": "Open settings" },
+    });
+    setIcon(gearBtn, "settings");
+    const open = (evt: Event) => {
+      evt.stopPropagation();
+      this.openSettings();
+    };
+    gearBtn.addEventListener("click", open);
+    gearBtn.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        open(evt);
+      }
+    });
+  }
+
+  private openSettings() {
+    const setting = (this.app as unknown as {
+      setting?: { open(): void; openTabById(id: string): void };
+    }).setting;
+    setting?.open();
+    setting?.openTabById(this.plugin.manifest.id);
+  }
+
+  private async cycleDayMode() {
+    const order: DayOpenMode[] = ["open", "collapsed", "hover"];
+    const idx = order.indexOf(this.plugin.settings.dayOpenMode);
+    this.plugin.settings.dayOpenMode = order[(idx + 1) % order.length];
+    // Reset per-day overrides so the new mode's default applies cleanly.
+    this.collapsedDays.clear();
+    await this.plugin.saveSettings();
+  }
+
   render() {
     const container = this.contentEl;
     container.empty();
@@ -743,11 +886,14 @@ class RecentEditsView extends ItemView {
       "--recent-edits-dot-color",
       this.plugin.settings.externalEditColor
     );
+    container.dataset.dayMode = this.plugin.settings.dayOpenMode;
 
     const hasBackground = this.plugin.settings.backgroundFolders.length > 0;
     const groups = this.getRecentFiles();
 
     if (groups.length === 0) {
+      const bar = container.createDiv({ cls: "recent-edits-empty-controls" });
+      this.renderControls(bar);
       const days = this.plugin.settings.lookbackDays;
       const empty = container.createDiv({ cls: "recent-edits-empty" });
       empty.setText(
@@ -768,18 +914,25 @@ class RecentEditsView extends ItemView {
     }
 
     const list = container.createDiv({ cls: "recent-edits-list" });
-    for (const g of groups) {
-      this.renderGroup(list, g, hasBackground);
-    }
+    groups.forEach((g, i) => {
+      this.renderGroup(list, g, hasBackground, i === 0);
+    });
   }
 
   private renderGroup(
     parent: HTMLElement,
     g: DayGroup,
-    withBgToggle: boolean
+    withBgToggle: boolean,
+    isFirst: boolean
   ) {
     const groupEl = parent.createDiv({ cls: "recent-edits-group" });
-    if (this.collapsedDays.has(g.key)) groupEl.dataset.collapsed = "true";
+    // "open" mode defaults to expanded; "collapsed" and "hover" default to
+    // collapsed in the DOM (hover then reveals via CSS on mouse-over).
+    // collapsedDays holds per-day overrides of that default.
+    const defaultCollapsed = this.plugin.settings.dayOpenMode !== "open";
+    const isCollapsed = () =>
+      defaultCollapsed !== this.collapsedDays.has(g.key);
+    if (isCollapsed()) groupEl.dataset.collapsed = "true";
 
     const header = groupEl.createDiv({ cls: "recent-edits-day-header" });
     const chevron = header.createSpan({ cls: "recent-edits-chevron" });
@@ -817,14 +970,12 @@ class RecentEditsView extends ItemView {
       cls: "recent-edits-day-count",
       text: String(g.files.length),
     });
+    if (isFirst) this.renderControls(header);
     header.addEventListener("click", () => {
-      if (this.collapsedDays.has(g.key)) {
-        this.collapsedDays.delete(g.key);
-        delete groupEl.dataset.collapsed;
-      } else {
-        this.collapsedDays.add(g.key);
-        groupEl.dataset.collapsed = "true";
-      }
+      if (this.collapsedDays.has(g.key)) this.collapsedDays.delete(g.key);
+      else this.collapsedDays.add(g.key);
+      if (isCollapsed()) groupEl.dataset.collapsed = "true";
+      else delete groupEl.dataset.collapsed;
     });
 
     const filesEl = groupEl.createDiv({ cls: "recent-edits-day-files" });
@@ -840,11 +991,27 @@ class RecentEditsView extends ItemView {
     }
 
     const info = row.createDiv({ cls: "recent-edits-row-info" });
-    const name = info.createDiv({
+    const nameLine = info.createDiv({ cls: "recent-edits-row-nameline" });
+    const name = nameLine.createDiv({
       cls: "recent-edits-row-name",
       text: file.basename,
     });
     name.setAttribute("title", file.path);
+    if (this.plugin.settings.showSizeIndicator) {
+      const dir = this.plugin.sizeDelta(file);
+      if (dir) {
+        const sizeEl = nameLine.createSpan({
+          cls: `recent-edits-size-delta is-${dir}`,
+          attr: {
+            "aria-label":
+              dir === "up"
+                ? "Larger than previous edit"
+                : "Smaller than previous edit",
+          },
+        });
+        setIcon(sizeEl, dir === "up" ? "chevron-up" : "chevron-down");
+      }
+    }
 
     const folderPath = file.parent ? file.parent.path : "";
     const displayPath =
@@ -1012,6 +1179,52 @@ class RecentEditsSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    new Setting(containerEl)
+      .setName("File size change indicator")
+      .setDesc(
+        "Show a subtle up/down chevron on each row indicating whether the file grew (green) or shrank (red) since its previous edit."
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.showSizeIndicator)
+          .onChange(async (val) => {
+            this.plugin.settings.showSizeIndicator = val;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Size change threshold (KB)")
+      .setDesc(
+        "Minimum change, in KB, for a row to show the up/down indicator. Smaller changes are ignored. Recommended: 10."
+      )
+      .addText((text) => {
+        text
+          .setValue(String(this.plugin.settings.sizeDeltaThresholdKb))
+          .onChange(async (val) => {
+            const n = parseFloat(val);
+            if (!isNaN(n) && n >= 0) {
+              this.plugin.settings.sizeDeltaThresholdKb = n;
+              await this.plugin.saveSettings();
+            }
+          });
+        text.inputEl.type = "number";
+        text.inputEl.min = "0";
+        // Clamp invalid/negative input on blur and re-sync the field.
+        text.inputEl.addEventListener("blur", () => {
+          const n = parseFloat(text.inputEl.value);
+          const clamped =
+            isNaN(n) || n < 0
+              ? this.plugin.settings.sizeDeltaThresholdKb
+              : n;
+          if (clamped !== this.plugin.settings.sizeDeltaThresholdKb) {
+            this.plugin.settings.sizeDeltaThresholdKb = clamped;
+            void this.plugin.saveSettings();
+          }
+          text.setValue(String(this.plugin.settings.sizeDeltaThresholdKb));
+        });
+      });
 
     new Setting(containerEl)
       .setName("Copy absolute path affordance")
@@ -1184,6 +1397,28 @@ function formatTime12h(d: Date): string {
   h = h % 12;
   if (h === 0) h = 12;
   return `${h}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+
+function dayModeIcon(mode: DayOpenMode): string {
+  switch (mode) {
+    case "open":
+      return "chevrons-up-down";
+    case "collapsed":
+      return "chevrons-down-up";
+    case "hover":
+      return "eye";
+  }
+}
+
+function dayModeLabel(mode: DayOpenMode): string {
+  switch (mode) {
+    case "open":
+      return "Days: expanded. Click to collapse by default.";
+    case "collapsed":
+      return "Days: collapsed. Click to reveal on hover.";
+    case "hover":
+      return "Days: reveal on hover. Click to expand.";
+  }
 }
 
 class RenameFileModal extends Modal {
