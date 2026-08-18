@@ -968,9 +968,11 @@ class RecentEditsView extends ItemView {
       attr: {
         role: "button",
         tabindex: "0",
-        "aria-label": files.length
-          ? `${files.length} pinned note${files.length === 1 ? "" : "s"}`
-          : "Pinned notes",
+        // Hover already reveals the drawer, so the tooltip has to carry the
+        // one thing hovering can't tell you: that clicking holds it open.
+        "aria-label": this.pinDrawerLocked
+          ? "Pinned notes. Click to close."
+          : "Pinned notes. Click to keep open.",
         "aria-expanded": String(this.pinDrawerOpen),
       },
     });
@@ -1059,6 +1061,12 @@ class RecentEditsView extends ItemView {
       this.pinDrawerLocked = !this.pinDrawerLocked;
       this.setPinDrawerOpen(this.pinDrawerLocked);
       drawer.toggleClass("is-locked", this.pinDrawerLocked);
+      pill.setAttribute(
+        "aria-label",
+        this.pinDrawerLocked
+          ? "Pinned notes. Click to close."
+          : "Pinned notes. Click to keep open."
+      );
     };
     pill.addEventListener("click", toggleLock);
     pill.addEventListener("keydown", (evt) => {
@@ -1180,7 +1188,14 @@ class RecentEditsView extends ItemView {
       defaultCollapsed !== this.collapsedDays.has(g.key);
     if (isCollapsed()) groupEl.dataset.collapsed = "true";
 
-    const header = groupEl.createDiv({ cls: "recent-edits-day-header" });
+    // The header and the pinned drawer share a plain block wrapper. The drawer
+    // anchors to it with an explicit top:100% rather than relying on its
+    // static position: an absolutely-positioned child of a FLEX container
+    // (which the group is) takes its static position as if it were the sole
+    // flex item, i.e. the top of the group — which put the peek drawer over
+    // the header and covered the pill. An explicit anchor sidesteps that.
+    const headerWrap = groupEl.createDiv({ cls: "recent-edits-header-wrap" });
+    const header = headerWrap.createDiv({ cls: "recent-edits-day-header" });
     const chevron = header.createSpan({ cls: "recent-edits-chevron" });
     setIcon(chevron, "chevron-down");
     header.createSpan({
@@ -1192,7 +1207,7 @@ class RecentEditsView extends ItemView {
     // than in renderControls so it lands left of the "More" pill; the drawer
     // is appended to groupEl now, which puts it between the header and the
     // day's files.
-    if (isFirst) this.renderPinnedControl(header, groupEl);
+    if (isFirst) this.renderPinnedControl(header, headerWrap);
 
     if (withBgToggle) {
       const toggle = header.createSpan({ cls: "recent-edits-bg-toggle" });

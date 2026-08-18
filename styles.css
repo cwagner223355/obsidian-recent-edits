@@ -142,11 +142,13 @@
   margin-left: 4px;
 }
 
-/* Containing block for the pinned drawer when it's peeking. The drawer is a
-   sibling of the day header inside the group, so its static position is
-   already directly beneath the header; absolute positioning with no `top`
-   keeps it exactly there. */
-.recent-edits-group,
+/* Containing block for the pinned drawer. Deliberately a plain block element
+   wrapping only the day header: the drawer anchors to its bottom edge with
+   top:100%. Anchoring to the group instead would not work, because an
+   absolutely-positioned child of a flex container takes its static position
+   as if it were the sole flex item (the top of the container), which put the
+   peek drawer on top of the header and covered the Pinned pill. */
+.recent-edits-header-wrap,
 .recent-edits-empty-controls-wrap {
   position: relative;
 }
@@ -548,9 +550,10 @@
    reflows the day list beneath the cursor. */
 .recent-edits-pin-drawer {
   /* Peek mode: out of flow so the list underneath never reflows mid-hover.
-     No `top`, so the box sits at its static position (just under the day
-     header) — the same spot it occupies when locked. */
+     top:100% pins it to the bottom edge of the header wrapper, which is the
+     same place it occupies when locked and back in flow. */
   position: absolute;
+  top: 100%;
   left: 0;
   right: 0;
   z-index: var(--layer-popover, 30);
