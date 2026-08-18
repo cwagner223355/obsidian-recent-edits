@@ -18,6 +18,7 @@ import {
 
 type PathCopyAffordance = "button" | "path-text" | "both";
 type DayOpenMode = "open" | "collapsed" | "hover";
+type RowLayout = "two-line" | "one-line";
 
 interface RecentEditsSettings {
   excludedFolders: string[];
@@ -29,6 +30,7 @@ interface RecentEditsSettings {
   showSizeIndicator: boolean;
   sizeDeltaThresholdKb: number;
   dayOpenMode: DayOpenMode;
+  rowLayout: RowLayout;
 }
 
 const DEFAULT_SETTINGS: RecentEditsSettings = {
@@ -41,6 +43,7 @@ const DEFAULT_SETTINGS: RecentEditsSettings = {
   showSizeIndicator: false,
   sizeDeltaThresholdKb: 10,
   dayOpenMode: "open",
+  rowLayout: "two-line",
 };
 
 const VIEW_TYPE_RECENT_EDITS = "recent-edits-view";
@@ -887,6 +890,7 @@ class RecentEditsView extends ItemView {
       this.plugin.settings.externalEditColor
     );
     container.dataset.dayMode = this.plugin.settings.dayOpenMode;
+    container.dataset.rowLayout = this.plugin.settings.rowLayout;
 
     const hasBackground = this.plugin.settings.backgroundFolders.length > 0;
     const groups = this.getRecentFiles();
@@ -1013,22 +1017,34 @@ class RecentEditsView extends ItemView {
       }
     }
 
-    const folderPath = file.parent ? file.parent.path : "";
-    const displayPath =
-      folderPath === "" || folderPath === "/" ? "/" : folderPath + "/";
-    const pathEl = info.createDiv({
-      cls: "recent-edits-row-path",
-      text: displayPath,
-    });
+    // One-line mode drops the folder-path line entirely; the filename's title
+    // attribute (set above) still surfaces the full path on hover.
+    const oneLine = this.plugin.settings.rowLayout === "one-line";
+    let pathEl: HTMLElement | null = null;
+    if (!oneLine) {
+      const folderPath = file.parent ? file.parent.path : "";
+      const displayPath =
+        folderPath === "" || folderPath === "/" ? "/" : folderPath + "/";
+      pathEl = info.createDiv({
+        cls: "recent-edits-row-path",
+        text: displayPath,
+      });
+    }
 
     // The absolute-path copy only works on desktop (FileSystemAdapter), so
     // don't render a dead affordance on mobile.
     const affordance = this.plugin.settings.pathCopyAffordance;
     const canCopyAbsolute = Platform.isDesktopApp;
+    // With no path text to click in one-line mode, the button is the only
+    // possible surface. The stored pathCopyAffordance value is left untouched
+    // so it reapplies when the user switches back to two-line.
     const showButton =
-      canCopyAbsolute && (affordance === "button" || affordance === "both");
+      canCopyAbsolute &&
+      (oneLine || affordance === "button" || affordance === "both");
     const pathTextIsCopyTarget =
-      canCopyAbsolute && (affordance === "path-text" || affordance === "both");
+      !oneLine &&
+      canCopyAbsolute &&
+      (affordance === "path-text" || affordance === "both");
 
     const copyAbsolutePath = async (evt: Event) => {
       evt.stopPropagation();
@@ -1046,7 +1062,7 @@ class RecentEditsView extends ItemView {
       }
     };
 
-    if (pathTextIsCopyTarget) {
+    if (pathTextIsCopyTarget && pathEl) {
       pathEl.addClass("is-copy-target");
       pathEl.setAttribute("aria-label", "Click to copy absolute path");
       pathEl.addEventListener("click", (evt) => { void copyAbsolutePath(evt); });
@@ -1167,6 +1183,22 @@ class RecentEditsSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Row layout")
+      .setDesc(
+        "Two lines shows the folder path beneath the filename. One line drops the path to fit more entries on screen and moves the time onto the filename row; the full path is still available by hovering the filename."
+      )
+      .addDropdown((dd) =>
+        dd
+          .addOption("two-line", "Two lines (filename + path)")
+          .addOption("one-line", "One line (filename only)")
+          .setValue(this.plugin.settings.rowLayout)
+          .onChange(async (val) => {
+            this.plugin.settings.rowLayout = val as RowLayout;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
       .setName("External edit indicator color")
       .setDesc(
         "Color of the dot shown next to files edited from outside Obsidian (filesystem writes, sync, plugins). Default is Anthropic orange."
@@ -1229,7 +1261,7 @@ class RecentEditsSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Copy absolute path affordance")
       .setDesc(
-        "How to expose the 'copy absolute path to clipboard' action on each row. The button is an explicit, always-visible target; the folder-path text is a subtler invisible affordance. Use Both to expose both."
+        "How to expose the 'copy absolute path to clipboard' action on each row. The button is an explicit, always-visible target; the folder-path text is a subtler invisible affordance. Use Both to expose both. One-line row layout always uses the button, since there is no path text to click."
       )
       .addDropdown((dd) =>
         dd

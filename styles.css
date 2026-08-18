@@ -436,3 +436,26 @@
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* One-line row layout
+   The meta column becomes a horizontal cluster (copy button, then time) sitting
+   on the same baseline as the filename. Row padding tightens since there's no
+   second line to space away from the next row. */
+.recent-edits-container[data-row-layout="one-line"] .recent-edits-row {
+  align-items: center;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.recent-edits-container[data-row-layout="one-line"] .recent-edits-row-meta,
+.recent-edits-container[data-row-layout="one-line"]
+  .recent-edits-row-meta.has-button {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.recent-edits-container[data-row-layout="one-line"] .recent-edits-day-files {
+  gap: 0;
+}
