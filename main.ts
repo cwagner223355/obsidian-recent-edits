@@ -18,6 +18,7 @@ import {
 
 type PathCopyAffordance = "button" | "path-text" | "both";
 type DayOpenMode = "open" | "collapsed" | "hover";
+type RowLayout = "two-line" | "one-line";
 
 interface RecentEditsSettings {
   excludedFolders: string[];
@@ -29,6 +30,7 @@ interface RecentEditsSettings {
   showSizeIndicator: boolean;
   sizeDeltaThresholdKb: number;
   dayOpenMode: DayOpenMode;
+  rowLayout: RowLayout;
 }
 
 const DEFAULT_SETTINGS: RecentEditsSettings = {
@@ -41,6 +43,7 @@ const DEFAULT_SETTINGS: RecentEditsSettings = {
   showSizeIndicator: false,
   sizeDeltaThresholdKb: 10,
   dayOpenMode: "open",
+  rowLayout: "two-line",
 };
 
 const VIEW_TYPE_RECENT_EDITS = "recent-edits-view";
@@ -57,6 +60,12 @@ const ACTIVE_LOCAL_FILE_WINDOW_MS = 5 * 60 * 1000;
 const EXTERNAL_SYNC_GUARD_MS = 60_000;
 const FILE_OPEN_WINDOW_MS = 2000;
 const CREATE_CLASSIFY_DELAY_MS = 800;
+// Hover-intent for the pinned drawer: long enough that sweeping the cursor
+// past the button on the way to a row doesn't open it, short enough that a
+// deliberate hover feels immediate.
+const PIN_HOVER_OPEN_MS = 250;
+const PIN_HOVER_CLOSE_MS = 180;
+
 
 type EditSource = "obsidian" | "external";
 
@@ -65,6 +74,10 @@ export default class RecentEditsPlugin extends Plugin {
   editSources: Record<string, EditSource> = {};
   editTimes: Record<string, number> = {};
   dismissedAt: Record<string, number> = {};
+  // Pinned file paths. Deliberately NOT pruned by the lookback window: a pin
+  // is an explicit user act and outlives the running log.
+  // Only vanishes when the file does, or when the user clears it.
+  pinned: Set<string> = new Set();
   editSizes: Record<string, number> = {};
   sizeDeltas: Record<string, "up" | "down"> = {};
   private editorChangeTimes = new Map<string, number>();
@@ -178,6 +191,9 @@ export default class RecentEditsPlugin extends Plugin {
             delete this.sizeDeltas[file.path];
             changed = true;
           }
+          if (this.pinned.delete(file.path)) {
+            changed = true;
+          }
           if (changed) this.scheduleSaveData();
         }
         this.refreshViews();
@@ -211,6 +227,10 @@ export default class RecentEditsPlugin extends Plugin {
           if (this.sizeDeltas[oldPath] !== undefined) {
             this.sizeDeltas[file.path] = this.sizeDeltas[oldPath];
             delete this.sizeDeltas[oldPath];
+            changed = true;
+          }
+          if (this.pinned.delete(oldPath)) {
+            this.pinned.add(file.path);
             changed = true;
           }
           if (changed) this.scheduleSaveData();
@@ -385,6 +405,30 @@ export default class RecentEditsPlugin extends Plugin {
     this.refreshViews();
   }
 
+  isPinned(file: TFile): boolean {
+    return this.pinned.has(file.path);
+  }
+
+  togglePin(file: TFile) {
+    if (!this.pinned.delete(file.path)) this.pinned.add(file.path);
+    this.scheduleSaveData();
+    this.refreshViews();
+  }
+
+  // Resolves pinned paths to live files, newest effective edit first.
+  // Deliberately ignores the lookback window, the excluded/background folder
+  // filters, and dismissals: an explicit pin outranks all of them.
+  // Paths that no longer resolve are skipped here and pruned on next persist.
+  pinnedFiles(): TFile[] {
+    const files: TFile[] = [];
+    for (const path of this.pinned) {
+      const f = this.app.vault.getAbstractFileByPath(path);
+      if (f instanceof TFile) files.push(f);
+    }
+    files.sort((a, b) => this.effectiveMtime(b) - this.effectiveMtime(a));
+    return files;
+  }
+
   async activateView() {
     const { workspace } = this.app;
     const existing = workspace.getLeavesOfType(VIEW_TYPE_RECENT_EDITS);
@@ -433,12 +477,14 @@ export default class RecentEditsPlugin extends Plugin {
     const sizeDeltas = (raw._sizeDeltas as
       | Record<string, "up" | "down">
       | undefined) ?? {};
+    const pinned = new Set((raw._pinned as string[] | undefined) ?? []);
     const settingsBlob = { ...raw };
     delete (settingsBlob as Record<string, unknown>)._editSources;
     delete (settingsBlob as Record<string, unknown>)._editTimes;
     delete (settingsBlob as Record<string, unknown>)._dismissedAt;
     delete (settingsBlob as Record<string, unknown>)._editSizes;
     delete (settingsBlob as Record<string, unknown>)._sizeDeltas;
+    delete (settingsBlob as Record<string, unknown>)._pinned;
 
     // Copy only known settings keys so stray or legacy keys in data.json aren't
     // merged into settings and re-persisted forever.
@@ -462,6 +508,7 @@ export default class RecentEditsPlugin extends Plugin {
     this.dismissedAt = dismissedAt;
     this.editSizes = editSizes;
     this.sizeDeltas = sizeDeltas;
+    this.pinned = pinned;
   }
 
   // Re-reads persisted edit metadata (sources, times, dismissals) from
@@ -493,11 +540,13 @@ export default class RecentEditsPlugin extends Plugin {
     const sizeDeltas = (raw._sizeDeltas as
       | Record<string, "up" | "down">
       | undefined) ?? {};
+    const pinned = new Set((raw._pinned as string[] | undefined) ?? []);
     this.editSources = editSources;
     this.editTimes = editTimes;
     this.dismissedAt = dismissedAt;
     this.editSizes = editSizes;
     this.sizeDeltas = sizeDeltas;
+    this.pinned = pinned;
     this.refreshViews();
   }
 
@@ -591,6 +640,25 @@ export default class RecentEditsPlugin extends Plugin {
     }
     this.sizeDeltas = prunedDeltas;
 
+    // Pins are pruned on existence only, never on the lookback cutoff.
+    // Dropping one because the note went quiet for a week would defeat the
+    // point of pinning it.
+    //
+    // Gated on layoutReady: before the vault index is populated,
+    // getAbstractFileByPath returns null for files that genuinely exist, and
+    // unlike the other maps (which regenerate from vault events) a wiped
+    // pin is unrecoverable user intent. Skipping the prune for one cycle
+    // costs nothing; the next persist catches any stale entry.
+    if (this.app.workspace.layoutReady) {
+      const prunedPins = new Set<string>();
+      for (const path of this.pinned) {
+        if (this.app.vault.getAbstractFileByPath(path) instanceof TFile) {
+          prunedPins.add(path);
+        }
+      }
+      this.pinned = prunedPins;
+    }
+
     await this.saveData({
       ...this.settings,
       _editSources: this.editSources,
@@ -598,6 +666,7 @@ export default class RecentEditsPlugin extends Plugin {
       _dismissedAt: this.dismissedAt,
       _editSizes: this.editSizes,
       _sizeDeltas: this.sizeDeltas,
+      _pinned: [...this.pinned],
     });
   }
 }
@@ -613,6 +682,13 @@ class RecentEditsView extends ItemView {
   private collapsedDays = new Set<string>();
   private showBackgroundFolders = false;
   private refreshTimer: number | null = null;
+  // Pinned drawer. `Open` is the live visual state (survives re-render);
+  // `Locked` means the user clicked to hold it open, so hover-out won't close.
+  private pinDrawerOpen = false;
+  private pinDrawerLocked = false;
+  private pinOpenTimer: number | null = null;
+  private pinCloseTimer: number | null = null;
+  private pinDrawerEl: HTMLElement | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: RecentEditsPlugin) {
     super(leaf);
@@ -642,6 +718,8 @@ class RecentEditsView extends ItemView {
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
     }
+    this.clearPinTimers();
+    this.pinDrawerEl = null;
   }
 
   private showFileMenu(evt: MouseEvent, file: TFile) {
@@ -711,6 +789,16 @@ class RecentEditsView extends ItemView {
     );
 
     menu.addSeparator();
+
+    const pinned = this.plugin.isPinned(file);
+    menu.addItem((item) =>
+      item
+        .setTitle(pinned ? "Unpin" : "Pin")
+        .setIcon("lucide-pin")
+        .onClick(() => {
+          this.plugin.togglePin(file);
+        })
+    );
 
     menu.addItem((item) =>
       item
@@ -861,6 +949,164 @@ class RecentEditsView extends ItemView {
     });
   }
 
+  // The "Pinned" pill plus the drawer it reveals. The pill sits in the day
+  // header immediately left of the background-folders "More" pill; the drawer
+  // is a sibling of that header, so it hangs directly beneath it.
+  //
+  // Two positioning modes, deliberately different:
+  //   - hover peek: absolutely positioned, so it overlays the list and nothing
+  //     reflows out from under the cursor mid-hover.
+  //   - locked open: back in normal flow, so the day list moves down and sits
+  //     below the pinned section instead of being covered by it.
+  // The absolute case sets no `top`, so the box lands at its static position:
+  // the same place it occupies when locked. One layout, two stacking modes.
+  private renderPinnedControl(pillHost: HTMLElement, flowParent: HTMLElement) {
+    const files = this.plugin.pinnedFiles();
+
+    const pill = pillHost.createSpan({
+      cls: "recent-edits-bg-toggle recent-edits-pin-toggle",
+      attr: {
+        role: "button",
+        tabindex: "0",
+        // Hover already reveals the drawer, so the tooltip has to carry the
+        // one thing hovering can't tell you: that clicking holds it open.
+        "aria-label": this.pinDrawerLocked
+          ? "Pinned notes. Click to close."
+          : "Pinned notes. Click to keep open.",
+        "aria-expanded": String(this.pinDrawerOpen),
+      },
+    });
+    if (files.length > 0) pill.addClass("has-pins");
+    if (this.pinDrawerOpen) pill.addClass("is-active");
+    const pillIcon = pill.createSpan({ cls: "recent-edits-bg-toggle-icon" });
+    setIcon(pillIcon, "pin");
+    pill.createSpan({
+      cls: "recent-edits-bg-toggle-label",
+      text: "Pinned",
+    });
+
+    const drawer = flowParent.createDiv({ cls: "recent-edits-pin-drawer" });
+    // The day header toggles collapse on click and the drawer sits inside the
+    // same group, so swallow clicks that originate in the drawer.
+    drawer.addEventListener("click", (evt) => evt.stopPropagation());
+    this.pinDrawerEl = drawer;
+    if (this.pinDrawerOpen) drawer.dataset.open = "true";
+    if (this.pinDrawerLocked) drawer.addClass("is-locked");
+
+    const head = drawer.createDiv({ cls: "recent-edits-pin-drawer-head" });
+    head.createSpan({
+      cls: "recent-edits-pin-drawer-title",
+      text: "Pinned",
+    });
+    if (files.length > 0) {
+      head.createSpan({
+        cls: "recent-edits-pin-drawer-count",
+        text: String(files.length),
+      });
+    }
+
+    const list = drawer.createDiv({ cls: "recent-edits-pin-drawer-list" });
+    if (files.length === 0) {
+      list.createDiv({
+        cls: "recent-edits-pin-drawer-empty",
+        text: "No pinned notes. Right-click a row, or use its pin.",
+      });
+    } else {
+      for (const f of files) {
+        this.renderFileRow(list, f, { relativeStamp: true });
+      }
+      // Opening a file from the drawer dismisses it unless it's locked open.
+      list.addEventListener("click", () => {
+        if (!this.pinDrawerLocked) this.setPinDrawerOpen(false);
+      });
+    }
+
+    const cancelTimers = () => {
+      if (this.pinOpenTimer !== null) {
+        window.clearTimeout(this.pinOpenTimer);
+        this.pinOpenTimer = null;
+      }
+      if (this.pinCloseTimer !== null) {
+        window.clearTimeout(this.pinCloseTimer);
+        this.pinCloseTimer = null;
+      }
+    };
+
+    const scheduleOpen = () => {
+      if (this.pinDrawerLocked || this.pinDrawerOpen) return;
+      cancelTimers();
+      this.pinOpenTimer = window.setTimeout(() => {
+        this.pinOpenTimer = null;
+        this.setPinDrawerOpen(true);
+      }, PIN_HOVER_OPEN_MS);
+    };
+
+    const scheduleClose = () => {
+      if (this.pinDrawerLocked) return;
+      cancelTimers();
+      this.pinCloseTimer = window.setTimeout(() => {
+        this.pinCloseTimer = null;
+        this.setPinDrawerOpen(false);
+      }, PIN_HOVER_CLOSE_MS);
+    };
+
+    pill.addEventListener("mouseenter", scheduleOpen);
+    pill.addEventListener("mouseleave", scheduleClose);
+    // Entering the drawer keeps it alive so the cursor can travel from the
+    // button into the list without the close timer firing en route.
+    drawer.addEventListener("mouseenter", cancelTimers);
+    drawer.addEventListener("mouseleave", scheduleClose);
+
+    const toggleLock = (evt: Event) => {
+      evt.stopPropagation();
+      cancelTimers();
+      this.pinDrawerLocked = !this.pinDrawerLocked;
+      this.setPinDrawerOpen(this.pinDrawerLocked);
+      drawer.toggleClass("is-locked", this.pinDrawerLocked);
+      pill.setAttribute(
+        "aria-label",
+        this.pinDrawerLocked
+          ? "Pinned notes. Click to close."
+          : "Pinned notes. Click to keep open."
+      );
+    };
+    pill.addEventListener("click", toggleLock);
+    pill.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        toggleLock(evt);
+      }
+      if (evt.key === "Escape" && this.pinDrawerOpen) {
+        this.pinDrawerLocked = false;
+        this.setPinDrawerOpen(false);
+      }
+    });
+  }
+
+  private setPinDrawerOpen(open: boolean) {
+    this.pinDrawerOpen = open;
+    const el = this.pinDrawerEl;
+    if (!el) return;
+    if (open) el.dataset.open = "true";
+    else delete el.dataset.open;
+    const pill = this.contentEl.querySelector<HTMLElement>(
+      ".recent-edits-pin-toggle"
+    );
+    pill?.setAttribute("aria-expanded", String(open));
+    pill?.toggleClass("is-active", open);
+  }
+
+  private clearPinTimers() {
+    if (this.pinOpenTimer !== null) {
+      window.clearTimeout(this.pinOpenTimer);
+      this.pinOpenTimer = null;
+    }
+    if (this.pinCloseTimer !== null) {
+      window.clearTimeout(this.pinCloseTimer);
+      this.pinCloseTimer = null;
+    }
+  }
+
   private openSettings() {
     const setting = (this.app as unknown as {
       setting?: { open(): void; openTabById(id: string): void };
@@ -880,6 +1126,11 @@ class RecentEditsView extends ItemView {
 
   render() {
     const container = this.contentEl;
+    // container.empty() detaches the drawer, so any pending hover timer would
+    // fire against a dead node. Clear them and drop the stale reference before
+    // rebuilding; pinDrawerOpen survives so the drawer re-opens in place.
+    this.clearPinTimers();
+    this.pinDrawerEl = null;
     container.empty();
     container.addClass("recent-edits-container");
     container.style.setProperty(
@@ -887,12 +1138,17 @@ class RecentEditsView extends ItemView {
       this.plugin.settings.externalEditColor
     );
     container.dataset.dayMode = this.plugin.settings.dayOpenMode;
+    container.dataset.rowLayout = this.plugin.settings.rowLayout;
 
     const hasBackground = this.plugin.settings.backgroundFolders.length > 0;
     const groups = this.getRecentFiles();
 
     if (groups.length === 0) {
-      const bar = container.createDiv({ cls: "recent-edits-empty-controls" });
+      const wrap = container.createDiv({
+        cls: "recent-edits-empty-controls-wrap",
+      });
+      const bar = wrap.createDiv({ cls: "recent-edits-empty-controls" });
+      this.renderPinnedControl(bar, wrap);
       this.renderControls(bar);
       const days = this.plugin.settings.lookbackDays;
       const empty = container.createDiv({ cls: "recent-edits-empty" });
@@ -934,13 +1190,26 @@ class RecentEditsView extends ItemView {
       defaultCollapsed !== this.collapsedDays.has(g.key);
     if (isCollapsed()) groupEl.dataset.collapsed = "true";
 
-    const header = groupEl.createDiv({ cls: "recent-edits-day-header" });
+    // The header and the pinned drawer share a plain block wrapper. The drawer
+    // anchors to it with an explicit top:100% rather than relying on its
+    // static position: an absolutely-positioned child of a FLEX container
+    // (which the group is) takes its static position as if it were the sole
+    // flex item, i.e. the top of the group — which put the peek drawer over
+    // the header and covered the pill. An explicit anchor sidesteps that.
+    const headerWrap = groupEl.createDiv({ cls: "recent-edits-header-wrap" });
+    const header = headerWrap.createDiv({ cls: "recent-edits-day-header" });
     const chevron = header.createSpan({ cls: "recent-edits-chevron" });
     setIcon(chevron, "chevron-down");
     header.createSpan({
       cls: "recent-edits-day-label",
       text: formatDayLabel(g.date),
     });
+
+    // Panel-level, so it only rides the first day header. Rendered here rather
+    // than in renderControls so it lands left of the "More" pill; the drawer
+    // is appended to groupEl now, which puts it between the header and the
+    // day's files.
+    if (isFirst) this.renderPinnedControl(header, headerWrap);
 
     if (withBgToggle) {
       const toggle = header.createSpan({ cls: "recent-edits-bg-toggle" });
@@ -984,7 +1253,13 @@ class RecentEditsView extends ItemView {
     }
   }
 
-  private renderFileRow(parent: HTMLElement, file: TFile) {
+  // `relativeStamp` is set for rows that sit outside a day group (the pinned
+  // drawer), where a bare clock time would imply the edit happened today.
+  private renderFileRow(
+    parent: HTMLElement,
+    file: TFile,
+    opts: { relativeStamp?: boolean } = {}
+  ) {
     const row = parent.createDiv({ cls: "recent-edits-row" });
     if (this.plugin.isExternalEdit(file)) {
       row.addClass("is-external-edit");
@@ -1013,22 +1288,34 @@ class RecentEditsView extends ItemView {
       }
     }
 
-    const folderPath = file.parent ? file.parent.path : "";
-    const displayPath =
-      folderPath === "" || folderPath === "/" ? "/" : folderPath + "/";
-    const pathEl = info.createDiv({
-      cls: "recent-edits-row-path",
-      text: displayPath,
-    });
+    // One-line mode drops the folder-path line entirely; the filename's title
+    // attribute (set above) still surfaces the full path on hover.
+    const oneLine = this.plugin.settings.rowLayout === "one-line";
+    let pathEl: HTMLElement | null = null;
+    if (!oneLine) {
+      const folderPath = file.parent ? file.parent.path : "";
+      const displayPath =
+        folderPath === "" || folderPath === "/" ? "/" : folderPath + "/";
+      pathEl = info.createDiv({
+        cls: "recent-edits-row-path",
+        text: displayPath,
+      });
+    }
 
     // The absolute-path copy only works on desktop (FileSystemAdapter), so
     // don't render a dead affordance on mobile.
     const affordance = this.plugin.settings.pathCopyAffordance;
     const canCopyAbsolute = Platform.isDesktopApp;
+    // With no path text to click in one-line mode, the button is the only
+    // possible surface. The stored pathCopyAffordance value is left untouched
+    // so it reapplies when the user switches back to two-line.
     const showButton =
-      canCopyAbsolute && (affordance === "button" || affordance === "both");
+      canCopyAbsolute &&
+      (oneLine || affordance === "button" || affordance === "both");
     const pathTextIsCopyTarget =
-      canCopyAbsolute && (affordance === "path-text" || affordance === "both");
+      !oneLine &&
+      canCopyAbsolute &&
+      (affordance === "path-text" || affordance === "both");
 
     const copyAbsolutePath = async (evt: Event) => {
       evt.stopPropagation();
@@ -1046,16 +1333,48 @@ class RecentEditsView extends ItemView {
       }
     };
 
-    if (pathTextIsCopyTarget) {
+    if (pathTextIsCopyTarget && pathEl) {
       pathEl.addClass("is-copy-target");
       pathEl.setAttribute("aria-label", "Click to copy absolute path");
       pathEl.addEventListener("click", (evt) => { void copyAbsolutePath(evt); });
     }
 
     const meta = row.createDiv({ cls: "recent-edits-row-meta" });
+    // The actions cluster always exists (it holds at least the pin), so the
+    // meta column keeps a stable two-slot shape and rows never jump on hover.
+    meta.addClass("has-button");
+    const actions = meta.createDiv({ cls: "recent-edits-row-actions" });
+
+    const isPinned = this.plugin.isPinned(file);
+    const pinBtn = actions.createDiv({
+      cls: "recent-edits-row-pin-btn",
+      attr: {
+        role: "button",
+        tabindex: "0",
+        // State first, then the action: the icon alone can't say which it is.
+        "aria-label": isPinned
+          ? "Pinned. Click to unpin."
+          : "Not pinned. Click to pin.",
+      },
+    });
+    if (isPinned) pinBtn.addClass("is-pinned");
+    // One icon in both states. The accent tint carries the state change; a
+    // struck-through pin-off glyph reads as a broken affordance.
+    setIcon(pinBtn, "pin");
+    const togglePin = (evt: Event) => {
+      evt.stopPropagation();
+      this.plugin.togglePin(file);
+    };
+    pinBtn.addEventListener("click", togglePin);
+    pinBtn.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        togglePin(evt);
+      }
+    });
+
     if (showButton) {
-      meta.addClass("has-button");
-      const btn = meta.createDiv({
+      const btn = actions.createDiv({
         cls: "recent-edits-row-copy-btn",
         attr: {
           role: "button",
@@ -1072,10 +1391,20 @@ class RecentEditsView extends ItemView {
         }
       });
     }
-    meta.createSpan({
+    const stamp = new Date(this.plugin.effectiveMtime(file));
+    const timeEl = meta.createSpan({
       cls: "recent-edits-row-time",
-      text: formatTime12h(new Date(this.plugin.effectiveMtime(file))),
+      text: opts.relativeStamp
+        ? formatRelativeStamp(stamp)
+        : formatTime12h(stamp),
     });
+    // The abbreviated stamp loses detail, so keep the full one on hover.
+    if (opts.relativeStamp) {
+      timeEl.setAttribute(
+        "title",
+        `${formatDayKey(stamp)} ${formatTime12h(stamp)}`
+      );
+    }
 
     row.addEventListener("click", (evt) => {
       const forceNewTab = evt.metaKey || evt.ctrlKey;
@@ -1152,16 +1481,22 @@ class RecentEditsSettingTab extends PluginSettingTab {
         });
       });
 
+    // No heading on the first group: Obsidian convention, and the community
+    // linter flags a literal "General" heading.
+    new Setting(containerEl).setName("Row display").setHeading();
+
     new Setting(containerEl)
-      .setName("Hover preview")
+      .setName("Row layout")
       .setDesc(
-        "Show Obsidian's page preview popup when hovering an entry. Requires the Page Preview core plugin."
+        "Two lines shows the folder path beneath the filename. One line drops the path to fit more entries on screen and moves the time onto the filename row; the full path is still available by hovering the filename."
       )
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.enableHoverPreview)
+      .addDropdown((dd) =>
+        dd
+          .addOption("two-line", "Two lines (filename + path)")
+          .addOption("one-line", "One line (filename only)")
+          .setValue(this.plugin.settings.rowLayout)
           .onChange(async (val) => {
-            this.plugin.settings.enableHoverPreview = val;
+            this.plugin.settings.rowLayout = val as RowLayout;
             await this.plugin.saveSettings();
           })
       );
@@ -1229,7 +1564,7 @@ class RecentEditsSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Copy absolute path affordance")
       .setDesc(
-        "How to expose the 'copy absolute path to clipboard' action on each row. The button is an explicit, always-visible target; the folder-path text is a subtler invisible affordance. Use Both to expose both."
+        "How to expose the 'copy absolute path to clipboard' action on each row. The button is an explicit, always-visible target; the folder-path text is a subtler invisible affordance. Use Both to expose both. One-line row layout always uses the button, since there is no path text to click."
       )
       .addDropdown((dd) =>
         dd
@@ -1240,6 +1575,22 @@ class RecentEditsSettingTab extends PluginSettingTab {
           .onChange(async (val) => {
             this.plugin.settings.pathCopyAffordance =
               val as PathCopyAffordance;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl).setName("Behavior").setHeading();
+
+    new Setting(containerEl)
+      .setName("Hover preview")
+      .setDesc(
+        "Show Obsidian's page preview popup when hovering an entry. Requires the Page Preview core plugin."
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.enableHoverPreview)
+          .onChange(async (val) => {
+            this.plugin.settings.enableHoverPreview = val;
             await this.plugin.saveSettings();
           })
       );
@@ -1269,6 +1620,51 @@ class RecentEditsSettingTab extends PluginSettingTab {
       placeholder: "Type a folder path…",
       datalistId: "recent-edits-excluded-folder-list",
     });
+
+    this.addSupportSection(containerEl);
+  }
+
+  // Last group, deliberately. The funding URL is read from the manifest so
+  // there's one source of truth with the community-directory listing.
+  //
+  // Ko-fi publishes a drop-in widget script, but a plugin must not load or run
+  // remote code: community review rejects it, and it would put a third-party
+  // network request inside the settings pane. A plain link to the same page
+  // reaches the same destination and touches the network only on click.
+  private addSupportSection(containerEl: HTMLElement): void {
+    // fundingUrl is a valid manifest field but isn't on the typed
+    // PluginManifest, and it may be a bare string or a label->url map.
+    const funding = (
+      this.plugin.manifest as unknown as {
+        fundingUrl?: string | Record<string, string>;
+      }
+    ).fundingUrl;
+    const url =
+      typeof funding === "string"
+        ? funding
+        : Object.values(funding ?? {}).find((v) => typeof v === "string");
+    if (!url) return;
+
+    new Setting(containerEl).setName("Support").setHeading();
+
+    const setting = new Setting(containerEl)
+      .setName("Buy me a coffee")
+      .setDesc(
+        "Recent Edits is free and always will be. If it earns a place in your daily workflow, a coffee helps keep it maintained."
+      );
+
+    // A real anchor rather than a button: middle-click and "copy link address"
+    // work, and Obsidian handles the external navigation itself.
+    const link = setting.controlEl.createEl("a", {
+      cls: "recent-edits-kofi",
+      href: url,
+      attr: {
+        target: "_blank",
+        rel: "noopener noreferrer",
+        "aria-label": "Support Recent Edits on Ko-fi",
+      },
+    });
+    link.setAttribute("title", "Buy me a coffee at ko-fi.com");
   }
 
   private addFolderListSetting(
@@ -1386,8 +1782,31 @@ function formatDayLabel(d: Date): string {
   const diff = Math.round((today.getTime() - d.getTime()) / 86400000);
   if (diff === 0) return "Today";
   if (diff === 1) return "Yesterday";
-  const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
-  return `${formatDayKey(d)} (${weekday})`;
+  return `${formatDayKey(d)} (${WEEKDAYS[d.getDay()]})`;
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+// Timestamp label for a row that carries no day header of its own (the pinned
+// drawer). A bare clock time there reads as "today" no matter how old the edit
+// is, so only today keeps the time. Weekday names are unambiguous for a week;
+// past that they'd be misleading in a new way, so fall back to a date. Pinned
+// notes are not lookback-bounded, so the old case is a real one, not a corner.
+function formatRelativeStamp(d: Date): string {
+  const today = startOfLocalDay(new Date());
+  const diff = Math.round(
+    (today.getTime() - startOfLocalDay(d).getTime()) / 86400000
+  );
+  if (diff === 0) return formatTime12h(d);
+  if (diff > 0 && diff < 7) return WEEKDAYS[d.getDay()];
+  const stamp = `${MONTHS[d.getMonth()]} ${d.getDate()}`;
+  return d.getFullYear() === today.getFullYear()
+    ? stamp
+    : `${stamp}, ${d.getFullYear()}`;
 }
 
 function formatTime12h(d: Date): string {

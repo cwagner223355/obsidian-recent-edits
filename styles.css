@@ -142,6 +142,17 @@
   margin-left: 4px;
 }
 
+/* Containing block for the pinned drawer. Deliberately a plain block element
+   wrapping only the day header: the drawer anchors to its bottom edge with
+   top:100%. Anchoring to the group instead would not work, because an
+   absolutely-positioned child of a flex container takes its static position
+   as if it were the sole flex item (the top of the container), which put the
+   peek drawer on top of the header and covered the Pinned pill. */
+.recent-edits-header-wrap,
+.recent-edits-empty-controls-wrap {
+  position: relative;
+}
+
 .recent-edits-control-btn.clickable-icon {
   color: var(--text-muted);
   padding: 2px;
@@ -249,6 +260,12 @@
 
 .recent-edits-row-meta.has-button {
   justify-content: space-between;
+}
+
+.recent-edits-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .recent-edits-row-time {
@@ -435,4 +452,203 @@
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* One-line row layout
+   The meta column becomes a horizontal cluster (copy button, then time) sitting
+   on the same baseline as the filename. Row padding tightens since there's no
+   second line to space away from the next row. */
+.recent-edits-container[data-row-layout="one-line"] .recent-edits-row {
+  align-items: center;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.recent-edits-container[data-row-layout="one-line"] .recent-edits-row-meta,
+.recent-edits-container[data-row-layout="one-line"]
+  .recent-edits-row-meta.has-button {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.recent-edits-container[data-row-layout="one-line"] .recent-edits-day-files {
+  gap: 0;
+}
+
+/* Pins: row pin button
+   Hidden (but still occupying its slot, so rows never shift) until the row is
+   hovered. Once pinned it stays visible and accent-tinted so pinned notes
+   are identifiable while scanning the running log. */
+.recent-edits-row-pin-btn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  box-shadow: none;
+  opacity: 0;
+  transition: opacity 80ms ease, color 80ms ease;
+}
+
+.recent-edits-row:hover .recent-edits-row-pin-btn,
+.recent-edits-row-pin-btn:focus-visible {
+  opacity: 1;
+}
+
+.recent-edits-row-pin-btn.is-pinned {
+  opacity: 1;
+  color: var(--text-accent);
+}
+
+.recent-edits-row-pin-btn:hover {
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-normal);
+}
+
+.recent-edits-row-pin-btn.is-pinned:hover {
+  color: var(--text-accent-hover);
+}
+
+.recent-edits-row-pin-btn:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.recent-edits-row-pin-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+}
+
+.recent-edits-row-pin-btn .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* Touch devices have no hover, so a hidden pin would be unreachable. */
+@media (hover: none) {
+  .recent-edits-row-pin-btn {
+    opacity: 1;
+  }
+}
+
+/* Pins: header pill
+   Shares the background-folder pill's shape. `has-pins` tints it so a glance
+   at the header says whether anything is pinned. */
+.recent-edits-pin-toggle.has-pins {
+  color: var(--text-accent);
+}
+
+/* Pins: drawer
+   A popover anchored under the toolbar button. Absolute so revealing it never
+   reflows the day list beneath the cursor. */
+.recent-edits-pin-drawer {
+  /* Peek mode: out of flow so the list underneath never reflows mid-hover.
+     top:100% pins it to the bottom edge of the header wrapper, which is the
+     same place it occupies when locked and back in flow. */
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: var(--layer-popover, 30);
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m, 6px);
+  background: var(--background-secondary);
+  box-shadow: var(--shadow-s, 0 2px 8px rgba(0, 0, 0, 0.25));
+  display: none;
+  cursor: default;
+  /* The day header is bold, larger, and letter-spaced; the drawer is a list,
+     so reset the inherited header typography. */
+  font-size: var(--font-ui-small);
+  font-weight: normal;
+  letter-spacing: normal;
+  text-align: left;
+}
+
+.recent-edits-pin-drawer[data-open="true"] {
+  display: block;
+}
+
+.recent-edits-pin-drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 4px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  margin-bottom: 4px;
+}
+
+.recent-edits-pin-drawer-title {
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.recent-edits-pin-drawer-count {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+
+.recent-edits-pin-drawer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.recent-edits-pin-drawer-empty {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  padding: 4px;
+  line-height: 1.4;
+}
+
+/* Locked open: back in normal flow, so the day list is pushed down and sits
+   after the pinned section instead of being covered by it. The border shift
+   also reads the held state as distinct from a transient peek. */
+.recent-edits-pin-drawer.is-locked {
+  position: static;
+  border-color: var(--background-modifier-border-focus);
+  margin: 4px 0 6px;
+  /* In flow it's a section, not a floating panel: drop the lift. */
+  box-shadow: none;
+  background: var(--background-primary-alt, var(--background-secondary));
+}
+
+/* Ko-fi support button.
+   The PNG is embedded as a data URI rather than loaded from Ko-fi's CDN: a
+   plugin should not make a third-party network request every time its settings
+   pane opens, and a remote asset breaks offline. 4.3KB source, fetched once at
+   build time. Native aspect ratio is 580x146. */
+.recent-edits-kofi {
+  display: inline-block;
+  width: 143px;
+  height: 36px;
+  background-image: url("data:image/png;base64,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");
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  border-radius: 5px;
+  transition: opacity 100ms ease;
+}
+
+.recent-edits-kofi:hover {
+  opacity: 0.85;
+}
+
+.recent-edits-kofi:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
 }
