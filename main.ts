@@ -60,6 +60,19 @@ const ACTIVE_LOCAL_FILE_WINDOW_MS = 5 * 60 * 1000;
 const EXTERNAL_SYNC_GUARD_MS = 60_000;
 const FILE_OPEN_WINDOW_MS = 2000;
 const CREATE_CLASSIFY_DELAY_MS = 800;
+// Hover-intent for the earmark drawer: long enough that sweeping the cursor
+// past the button on the way to a row doesn't open it, short enough that a
+// deliberate hover feels immediate.
+const EARMARK_HOVER_OPEN_MS = 250;
+const EARMARK_HOVER_CLOSE_MS = 180;
+
+// setIcon renders nothing (silently) for a name absent from Obsidian's bundled
+// Lucide subset. Fall back to a name we know ships rather than leaving a blank
+// button behind.
+function setIconWithFallback(el: HTMLElement, name: string, fallback: string) {
+  setIcon(el, name);
+  if (el.childElementCount === 0) setIcon(el, fallback);
+}
 
 type EditSource = "obsidian" | "external";
 
@@ -68,6 +81,10 @@ export default class RecentEditsPlugin extends Plugin {
   editSources: Record<string, EditSource> = {};
   editTimes: Record<string, number> = {};
   dismissedAt: Record<string, number> = {};
+  // Earmarked ("pinned") file paths. Deliberately NOT pruned by the lookback
+  // window: an earmark is an explicit user act and outlives the running log.
+  // Only vanishes when the file does, or when the user clears it.
+  earmarks: Set<string> = new Set();
   editSizes: Record<string, number> = {};
   sizeDeltas: Record<string, "up" | "down"> = {};
   private editorChangeTimes = new Map<string, number>();
@@ -181,6 +198,9 @@ export default class RecentEditsPlugin extends Plugin {
             delete this.sizeDeltas[file.path];
             changed = true;
           }
+          if (this.earmarks.delete(file.path)) {
+            changed = true;
+          }
           if (changed) this.scheduleSaveData();
         }
         this.refreshViews();
@@ -214,6 +234,10 @@ export default class RecentEditsPlugin extends Plugin {
           if (this.sizeDeltas[oldPath] !== undefined) {
             this.sizeDeltas[file.path] = this.sizeDeltas[oldPath];
             delete this.sizeDeltas[oldPath];
+            changed = true;
+          }
+          if (this.earmarks.delete(oldPath)) {
+            this.earmarks.add(file.path);
             changed = true;
           }
           if (changed) this.scheduleSaveData();
@@ -388,6 +412,30 @@ export default class RecentEditsPlugin extends Plugin {
     this.refreshViews();
   }
 
+  isEarmarked(file: TFile): boolean {
+    return this.earmarks.has(file.path);
+  }
+
+  toggleEarmark(file: TFile) {
+    if (!this.earmarks.delete(file.path)) this.earmarks.add(file.path);
+    this.scheduleSaveData();
+    this.refreshViews();
+  }
+
+  // Resolves earmarked paths to live files, newest effective edit first.
+  // Deliberately ignores the lookback window, the excluded/background folder
+  // filters, and dismissals: an explicit earmark outranks all of them.
+  // Paths that no longer resolve are skipped here and pruned on next persist.
+  earmarkedFiles(): TFile[] {
+    const files: TFile[] = [];
+    for (const path of this.earmarks) {
+      const f = this.app.vault.getAbstractFileByPath(path);
+      if (f instanceof TFile) files.push(f);
+    }
+    files.sort((a, b) => this.effectiveMtime(b) - this.effectiveMtime(a));
+    return files;
+  }
+
   async activateView() {
     const { workspace } = this.app;
     const existing = workspace.getLeavesOfType(VIEW_TYPE_RECENT_EDITS);
@@ -436,12 +484,14 @@ export default class RecentEditsPlugin extends Plugin {
     const sizeDeltas = (raw._sizeDeltas as
       | Record<string, "up" | "down">
       | undefined) ?? {};
+    const earmarks = new Set((raw._earmarks as string[] | undefined) ?? []);
     const settingsBlob = { ...raw };
     delete (settingsBlob as Record<string, unknown>)._editSources;
     delete (settingsBlob as Record<string, unknown>)._editTimes;
     delete (settingsBlob as Record<string, unknown>)._dismissedAt;
     delete (settingsBlob as Record<string, unknown>)._editSizes;
     delete (settingsBlob as Record<string, unknown>)._sizeDeltas;
+    delete (settingsBlob as Record<string, unknown>)._earmarks;
 
     // Copy only known settings keys so stray or legacy keys in data.json aren't
     // merged into settings and re-persisted forever.
@@ -465,6 +515,7 @@ export default class RecentEditsPlugin extends Plugin {
     this.dismissedAt = dismissedAt;
     this.editSizes = editSizes;
     this.sizeDeltas = sizeDeltas;
+    this.earmarks = earmarks;
   }
 
   // Re-reads persisted edit metadata (sources, times, dismissals) from
@@ -496,11 +547,13 @@ export default class RecentEditsPlugin extends Plugin {
     const sizeDeltas = (raw._sizeDeltas as
       | Record<string, "up" | "down">
       | undefined) ?? {};
+    const earmarks = new Set((raw._earmarks as string[] | undefined) ?? []);
     this.editSources = editSources;
     this.editTimes = editTimes;
     this.dismissedAt = dismissedAt;
     this.editSizes = editSizes;
     this.sizeDeltas = sizeDeltas;
+    this.earmarks = earmarks;
     this.refreshViews();
   }
 
@@ -594,6 +647,25 @@ export default class RecentEditsPlugin extends Plugin {
     }
     this.sizeDeltas = prunedDeltas;
 
+    // Earmarks are pruned on existence only, never on the lookback cutoff.
+    // Dropping one because the note went quiet for a week would defeat the
+    // point of earmarking it.
+    //
+    // Gated on layoutReady: before the vault index is populated,
+    // getAbstractFileByPath returns null for files that genuinely exist, and
+    // unlike the other maps (which regenerate from vault events) a wiped
+    // earmark is unrecoverable user intent. Skipping the prune for one cycle
+    // costs nothing; the next persist catches any stale entry.
+    if (this.app.workspace.layoutReady) {
+      const prunedEarmarks = new Set<string>();
+      for (const path of this.earmarks) {
+        if (this.app.vault.getAbstractFileByPath(path) instanceof TFile) {
+          prunedEarmarks.add(path);
+        }
+      }
+      this.earmarks = prunedEarmarks;
+    }
+
     await this.saveData({
       ...this.settings,
       _editSources: this.editSources,
@@ -601,6 +673,7 @@ export default class RecentEditsPlugin extends Plugin {
       _dismissedAt: this.dismissedAt,
       _editSizes: this.editSizes,
       _sizeDeltas: this.sizeDeltas,
+      _earmarks: [...this.earmarks],
     });
   }
 }
@@ -616,6 +689,13 @@ class RecentEditsView extends ItemView {
   private collapsedDays = new Set<string>();
   private showBackgroundFolders = false;
   private refreshTimer: number | null = null;
+  // Earmark drawer. `Open` is the live visual state (survives re-render);
+  // `Locked` means the user clicked to hold it open, so hover-out won't close.
+  private earmarkDrawerOpen = false;
+  private earmarkDrawerLocked = false;
+  private earmarkOpenTimer: number | null = null;
+  private earmarkCloseTimer: number | null = null;
+  private earmarkDrawerEl: HTMLElement | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: RecentEditsPlugin) {
     super(leaf);
@@ -645,6 +725,8 @@ class RecentEditsView extends ItemView {
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
     }
+    this.clearEarmarkTimers();
+    this.earmarkDrawerEl = null;
   }
 
   private showFileMenu(evt: MouseEvent, file: TFile) {
@@ -714,6 +796,16 @@ class RecentEditsView extends ItemView {
     );
 
     menu.addSeparator();
+
+    const earmarked = this.plugin.isEarmarked(file);
+    menu.addItem((item) =>
+      item
+        .setTitle(earmarked ? "Remove earmark" : "Earmark")
+        .setIcon("lucide-pin")
+        .onClick(() => {
+          this.plugin.toggleEarmark(file);
+        })
+    );
 
     menu.addItem((item) =>
       item
@@ -828,6 +920,8 @@ class RecentEditsView extends ItemView {
   private renderControls(target: HTMLElement) {
     const controls = target.createDiv({ cls: "recent-edits-controls" });
 
+    this.renderEarmarkControl(controls, target);
+
     const mode = this.plugin.settings.dayOpenMode;
     const modeBtn = controls.createDiv({
       cls: "clickable-icon recent-edits-control-btn",
@@ -864,6 +958,140 @@ class RecentEditsView extends ItemView {
     });
   }
 
+  // Pin button plus the drawer it reveals. The drawer is an absolutely
+  // positioned popover anchored to the controls cluster rather than a section
+  // in the flow: opening it must not reflow the list underneath the cursor,
+  // or a hover-peek would shove the button away from the pointer.
+  private renderEarmarkControl(controls: HTMLElement, anchor: HTMLElement) {
+    const files = this.plugin.earmarkedFiles();
+
+    const pinBtn = controls.createDiv({
+      cls: "clickable-icon recent-edits-control-btn recent-edits-earmark-btn",
+      attr: {
+        role: "button",
+        tabindex: "0",
+        "aria-label": files.length
+          ? `${files.length} earmarked note${files.length === 1 ? "" : "s"}`
+          : "Earmarked notes",
+        "aria-expanded": String(this.earmarkDrawerOpen),
+      },
+    });
+    if (files.length > 0) pinBtn.addClass("has-earmarks");
+    setIcon(pinBtn, "pin");
+
+    const drawer = anchor.createDiv({ cls: "recent-edits-earmark-drawer" });
+    // The day header toggles collapse on click; the drawer lives inside it, so
+    // swallow clicks that originate in the drawer.
+    drawer.addEventListener("click", (evt) => evt.stopPropagation());
+    this.earmarkDrawerEl = drawer;
+    if (this.earmarkDrawerOpen) drawer.dataset.open = "true";
+    if (this.earmarkDrawerLocked) drawer.addClass("is-locked");
+
+    const head = drawer.createDiv({ cls: "recent-edits-earmark-drawer-head" });
+    head.createSpan({
+      cls: "recent-edits-earmark-drawer-title",
+      text: "Earmarked",
+    });
+    if (files.length > 0) {
+      head.createSpan({
+        cls: "recent-edits-earmark-drawer-count",
+        text: String(files.length),
+      });
+    }
+
+    const list = drawer.createDiv({ cls: "recent-edits-earmark-drawer-list" });
+    if (files.length === 0) {
+      list.createDiv({
+        cls: "recent-edits-earmark-drawer-empty",
+        text: "No earmarked notes. Right-click a row, or use its pin.",
+      });
+    } else {
+      for (const f of files) this.renderFileRow(list, f);
+      // Opening a file from the drawer dismisses it unless it's locked open.
+      list.addEventListener("click", () => {
+        if (!this.earmarkDrawerLocked) this.setEarmarkDrawerOpen(false);
+      });
+    }
+
+    const cancelTimers = () => {
+      if (this.earmarkOpenTimer !== null) {
+        window.clearTimeout(this.earmarkOpenTimer);
+        this.earmarkOpenTimer = null;
+      }
+      if (this.earmarkCloseTimer !== null) {
+        window.clearTimeout(this.earmarkCloseTimer);
+        this.earmarkCloseTimer = null;
+      }
+    };
+
+    const scheduleOpen = () => {
+      if (this.earmarkDrawerLocked || this.earmarkDrawerOpen) return;
+      cancelTimers();
+      this.earmarkOpenTimer = window.setTimeout(() => {
+        this.earmarkOpenTimer = null;
+        this.setEarmarkDrawerOpen(true);
+      }, EARMARK_HOVER_OPEN_MS);
+    };
+
+    const scheduleClose = () => {
+      if (this.earmarkDrawerLocked) return;
+      cancelTimers();
+      this.earmarkCloseTimer = window.setTimeout(() => {
+        this.earmarkCloseTimer = null;
+        this.setEarmarkDrawerOpen(false);
+      }, EARMARK_HOVER_CLOSE_MS);
+    };
+
+    pinBtn.addEventListener("mouseenter", scheduleOpen);
+    pinBtn.addEventListener("mouseleave", scheduleClose);
+    // Entering the drawer keeps it alive so the cursor can travel from the
+    // button into the list without the close timer firing en route.
+    drawer.addEventListener("mouseenter", cancelTimers);
+    drawer.addEventListener("mouseleave", scheduleClose);
+
+    const toggleLock = (evt: Event) => {
+      evt.stopPropagation();
+      cancelTimers();
+      this.earmarkDrawerLocked = !this.earmarkDrawerLocked;
+      this.setEarmarkDrawerOpen(this.earmarkDrawerLocked);
+      drawer.toggleClass("is-locked", this.earmarkDrawerLocked);
+    };
+    pinBtn.addEventListener("click", toggleLock);
+    pinBtn.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        toggleLock(evt);
+      }
+      if (evt.key === "Escape" && this.earmarkDrawerOpen) {
+        this.earmarkDrawerLocked = false;
+        this.setEarmarkDrawerOpen(false);
+      }
+    });
+  }
+
+  private setEarmarkDrawerOpen(open: boolean) {
+    this.earmarkDrawerOpen = open;
+    const el = this.earmarkDrawerEl;
+    if (!el) return;
+    if (open) el.dataset.open = "true";
+    else delete el.dataset.open;
+    const btn = el.parentElement?.querySelector<HTMLElement>(
+      ".recent-edits-earmark-btn"
+    );
+    btn?.setAttribute("aria-expanded", String(open));
+  }
+
+  private clearEarmarkTimers() {
+    if (this.earmarkOpenTimer !== null) {
+      window.clearTimeout(this.earmarkOpenTimer);
+      this.earmarkOpenTimer = null;
+    }
+    if (this.earmarkCloseTimer !== null) {
+      window.clearTimeout(this.earmarkCloseTimer);
+      this.earmarkCloseTimer = null;
+    }
+  }
+
   private openSettings() {
     const setting = (this.app as unknown as {
       setting?: { open(): void; openTabById(id: string): void };
@@ -883,6 +1111,11 @@ class RecentEditsView extends ItemView {
 
   render() {
     const container = this.contentEl;
+    // container.empty() detaches the drawer, so any pending hover timer would
+    // fire against a dead node. Clear them and drop the stale reference before
+    // rebuilding; earmarkDrawerOpen survives so the drawer re-opens in place.
+    this.clearEarmarkTimers();
+    this.earmarkDrawerEl = null;
     container.empty();
     container.addClass("recent-edits-container");
     container.style.setProperty(
@@ -1069,9 +1302,40 @@ class RecentEditsView extends ItemView {
     }
 
     const meta = row.createDiv({ cls: "recent-edits-row-meta" });
+    // The actions cluster always exists (it holds at least the pin), so the
+    // meta column keeps a stable two-slot shape and rows never jump on hover.
+    meta.addClass("has-button");
+    const actions = meta.createDiv({ cls: "recent-edits-row-actions" });
+
+    const isEarmarked = this.plugin.isEarmarked(file);
+    const pinBtn = actions.createDiv({
+      cls: "recent-edits-row-pin-btn",
+      attr: {
+        role: "button",
+        tabindex: "0",
+        // State first, then the action: the icon alone can't say which it is.
+        "aria-label": isEarmarked
+          ? "Earmarked. Click to remove."
+          : "Not earmarked. Click to earmark.",
+      },
+    });
+    if (isEarmarked) pinBtn.addClass("is-earmarked");
+    if (isEarmarked) setIconWithFallback(pinBtn, "pin-off", "pin");
+    else setIcon(pinBtn, "pin");
+    const toggleEarmark = (evt: Event) => {
+      evt.stopPropagation();
+      this.plugin.toggleEarmark(file);
+    };
+    pinBtn.addEventListener("click", toggleEarmark);
+    pinBtn.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        toggleEarmark(evt);
+      }
+    });
+
     if (showButton) {
-      meta.addClass("has-button");
-      const btn = meta.createDiv({
+      const btn = actions.createDiv({
         cls: "recent-edits-row-copy-btn",
         attr: {
           role: "button",
