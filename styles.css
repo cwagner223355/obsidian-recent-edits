@@ -142,11 +142,12 @@
   margin-left: 4px;
 }
 
-/* Positioning context for the earmark drawer, which hangs off the full-width
-   header rather than the narrow controls cluster so it can't overflow a
-   narrow sidebar. */
-.recent-edits-day-header,
-.recent-edits-empty-controls {
+/* Containing block for the pinned drawer when it's peeking. The drawer is a
+   sibling of the day header inside the group, so its static position is
+   already directly beneath the header; absolute positioning with no `top`
+   keeps it exactly there. */
+.recent-edits-group,
+.recent-edits-empty-controls-wrap {
   position: relative;
 }
 
@@ -474,9 +475,9 @@
   gap: 0;
 }
 
-/* Earmarks: row pin button
+/* Pins: row pin button
    Hidden (but still occupying its slot, so rows never shift) until the row is
-   hovered. Once earmarked it stays visible and accent-tinted so pinned notes
+   hovered. Once pinned it stays visible and accent-tinted so pinned notes
    are identifiable while scanning the running log. */
 .recent-edits-row-pin-btn {
   background: transparent;
@@ -498,7 +499,7 @@
   opacity: 1;
 }
 
-.recent-edits-row-pin-btn.is-earmarked {
+.recent-edits-row-pin-btn.is-pinned {
   opacity: 1;
   color: var(--text-accent);
 }
@@ -509,7 +510,7 @@
   color: var(--text-normal);
 }
 
-.recent-edits-row-pin-btn.is-earmarked:hover {
+.recent-edits-row-pin-btn.is-pinned:hover {
   color: var(--text-accent-hover);
 }
 
@@ -535,17 +536,21 @@
   }
 }
 
-/* Earmarks: toolbar button */
-.recent-edits-earmark-btn.has-earmarks {
+/* Pins: header pill
+   Shares the background-folder pill's shape. `has-pins` tints it so a glance
+   at the header says whether anything is pinned. */
+.recent-edits-pin-toggle.has-pins {
   color: var(--text-accent);
 }
 
-/* Earmarks: drawer
+/* Pins: drawer
    A popover anchored under the toolbar button. Absolute so revealing it never
    reflows the day list beneath the cursor. */
-.recent-edits-earmark-drawer {
+.recent-edits-pin-drawer {
+  /* Peek mode: out of flow so the list underneath never reflows mid-hover.
+     No `top`, so the box sits at its static position (just under the day
+     header) — the same spot it occupies when locked. */
   position: absolute;
-  top: calc(100% + 2px);
   left: 0;
   right: 0;
   z-index: var(--layer-popover, 30);
@@ -566,11 +571,11 @@
   text-align: left;
 }
 
-.recent-edits-earmark-drawer[data-open="true"] {
+.recent-edits-pin-drawer[data-open="true"] {
   display: block;
 }
 
-.recent-edits-earmark-drawer-head {
+.recent-edits-pin-drawer-head {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -579,7 +584,7 @@
   margin-bottom: 4px;
 }
 
-.recent-edits-earmark-drawer-title {
+.recent-edits-pin-drawer-title {
   font-size: var(--font-ui-smaller);
   font-weight: 600;
   color: var(--text-muted);
@@ -587,27 +592,34 @@
   letter-spacing: 0.04em;
 }
 
-.recent-edits-earmark-drawer-count {
+.recent-edits-pin-drawer-count {
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
   margin-left: auto;
 }
 
-.recent-edits-earmark-drawer-list {
+.recent-edits-pin-drawer-list {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
-.recent-edits-earmark-drawer-empty {
+.recent-edits-pin-drawer-empty {
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
   padding: 4px;
   line-height: 1.4;
 }
 
-/* A locked-open drawer reads as a held state, not a transient peek. */
-.recent-edits-earmark-drawer.is-locked {
+/* Locked open: back in normal flow, so the day list is pushed down and sits
+   after the pinned section instead of being covered by it. The border shift
+   also reads the held state as distinct from a transient peek. */
+.recent-edits-pin-drawer.is-locked {
+  position: static;
   border-color: var(--background-modifier-border-focus);
+  margin: 4px 0 6px;
+  /* In flow it's a section, not a floating panel: drop the lift. */
+  box-shadow: none;
+  background: var(--background-primary-alt, var(--background-secondary));
 }
