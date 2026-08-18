@@ -16,19 +16,10 @@ Recent Edits shows what changed, when it changed, and flags the edits that came 
 
 ## Install
 
-### From the plugin directory
-
 1. Settings (⌘,) → **Community plugins**
 2. If you see "Restricted mode is on", click **Turn on community plugins**
 3. **Browse**, search for "Recent Edits", **Install**, then **Enable**
 4. Open the panel with the History ribbon icon, or ⌘P → "Recent Edits: Open panel"
-
-### Beta versions via BRAT
-
-1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from the community directory
-2. Settings → BRAT → **Add Beta plugin**
-3. Paste `cwagner223355/obsidian-recent-edits`
-4. Enable **Recent Edits** in Community plugins
 
 Requires Obsidian 1.7.2 or later. Works on desktop and mobile, though copying absolute paths is desktop only.
 
