@@ -1647,16 +1647,24 @@ class RecentEditsSettingTab extends PluginSettingTab {
 
     new Setting(containerEl).setName("Support").setHeading();
 
-    new Setting(containerEl)
+    const setting = new Setting(containerEl)
       .setName("Buy me a coffee")
       .setDesc(
         "Recent Edits is free and always will be. If it earns a place in your daily workflow, a coffee helps keep it maintained."
-      )
-      .addButton((btn) =>
-        btn.setButtonText("Buy me a coffee").onClick(() => {
-          window.open(url, "_blank");
-        })
       );
+
+    // A real anchor rather than a button: middle-click and "copy link address"
+    // work, and Obsidian handles the external navigation itself.
+    const link = setting.controlEl.createEl("a", {
+      cls: "recent-edits-kofi",
+      href: url,
+      attr: {
+        target: "_blank",
+        rel: "noopener noreferrer",
+        "aria-label": "Support Recent Edits on Ko-fi",
+      },
+    });
+    link.setAttribute("title", "Buy me a coffee at ko-fi.com");
   }
 
   private addFolderListSetting(
