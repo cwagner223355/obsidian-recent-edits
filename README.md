@@ -21,7 +21,7 @@ Recent Edits shows what changed, when it changed, and flags the edits that came 
 3. **Browse**, search for "Recent Edits", **Install**, then **Enable**
 4. Open the panel with the History ribbon icon, or ⌘P → "Recent Edits: Open panel"
 
-Requires Obsidian 1.7.2 or later. Works on desktop and mobile, though copying absolute paths is desktop only.
+Requires Obsidian 1.13.0 or later. Works on desktop and mobile, though copying absolute paths is desktop only.
 
 ## Reading the panel
 
