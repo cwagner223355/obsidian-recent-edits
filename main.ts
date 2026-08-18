@@ -1481,19 +1481,9 @@ class RecentEditsSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
-      .setName("Hover preview")
-      .setDesc(
-        "Show Obsidian's page preview popup when hovering an entry. Requires the Page Preview core plugin."
-      )
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.enableHoverPreview)
-          .onChange(async (val) => {
-            this.plugin.settings.enableHoverPreview = val;
-            await this.plugin.saveSettings();
-          })
-      );
+    // No heading on the first group: Obsidian convention, and the community
+    // linter flags a literal "General" heading.
+    new Setting(containerEl).setName("Row display").setHeading();
 
     new Setting(containerEl)
       .setName("Row layout")
@@ -1589,6 +1579,22 @@ class RecentEditsSettingTab extends PluginSettingTab {
           })
       );
 
+    new Setting(containerEl).setName("Behavior").setHeading();
+
+    new Setting(containerEl)
+      .setName("Hover preview")
+      .setDesc(
+        "Show Obsidian's page preview popup when hovering an entry. Requires the Page Preview core plugin."
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.enableHoverPreview)
+          .onChange(async (val) => {
+            this.plugin.settings.enableHoverPreview = val;
+            await this.plugin.saveSettings();
+          })
+      );
+
     new Setting(containerEl).setName("Filtering").setHeading();
 
     this.addFolderListSetting(containerEl, {
@@ -1614,6 +1620,43 @@ class RecentEditsSettingTab extends PluginSettingTab {
       placeholder: "Type a folder path…",
       datalistId: "recent-edits-excluded-folder-list",
     });
+
+    this.addSupportSection(containerEl);
+  }
+
+  // Last group, deliberately. The funding URL is read from the manifest so
+  // there's one source of truth with the community-directory listing.
+  //
+  // Ko-fi publishes a drop-in widget script, but a plugin must not load or run
+  // remote code: community review rejects it, and it would put a third-party
+  // network request inside the settings pane. A plain link to the same page
+  // reaches the same destination and touches the network only on click.
+  private addSupportSection(containerEl: HTMLElement): void {
+    // fundingUrl is a valid manifest field but isn't on the typed
+    // PluginManifest, and it may be a bare string or a label->url map.
+    const funding = (
+      this.plugin.manifest as unknown as {
+        fundingUrl?: string | Record<string, string>;
+      }
+    ).fundingUrl;
+    const url =
+      typeof funding === "string"
+        ? funding
+        : Object.values(funding ?? {}).find((v) => typeof v === "string");
+    if (!url) return;
+
+    new Setting(containerEl).setName("Support").setHeading();
+
+    new Setting(containerEl)
+      .setName("Buy me a coffee")
+      .setDesc(
+        "Recent Edits is free and always will be. If it earns a place in your daily workflow, a coffee helps keep it maintained."
+      )
+      .addButton((btn) =>
+        btn.setButtonText("Buy me a coffee").onClick(() => {
+          window.open(url, "_blank");
+        })
+      );
   }
 
   private addFolderListSetting(
