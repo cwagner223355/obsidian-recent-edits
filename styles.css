@@ -356,8 +356,21 @@
   color: var(--text-muted);
 }
 
+/* Folder chip pickers are rendered inside their own setting row (declarative
+   settings, 1.13+), so the row stacks instead of squeezing a full-width
+   picker into the right-hand control slot. */
+.recent-edits-folder-setting {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.recent-edits-folder-setting .setting-item-info {
+  margin-right: 0;
+  margin-bottom: 8px;
+}
+
 .recent-edits-folder-list {
-  margin: 0 0 14px 0;
+  margin: 0;
   padding: 10px 12px 12px 12px;
   background: var(--background-secondary);
   border-radius: 6px;

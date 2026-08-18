@@ -1,6 +1,6 @@
 {
   "name": "recent-edits",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Shows files modified in the last N days, grouped by day. Marks edits made from outside Obsidian (filesystem writes, sync, plugins) with a configurable indicator.",
   "main": "main.js",
   "scripts": {
@@ -29,7 +29,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "esbuild": "^0.20.0",
-    "obsidian": "^1.5.0",
+    "obsidian": "^1.13.1",
     "tslib": "^2.6.0",
     "typescript": "^5.3.0"
   }

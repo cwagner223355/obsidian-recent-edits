@@ -9,6 +9,7 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  SettingDefinitionItem,
   TFile,
   TFolder,
   WorkspaceLeaf,
@@ -1445,195 +1446,169 @@ class RecentEditsSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-    containerEl.addClass("recent-edits-settings");
-
-    new Setting(containerEl)
-      .setName("Lookback days")
-      .setDesc("How many days back to show. Range: 1 to 90.")
-      .addText((text) => {
-        text
-          .setValue(String(this.plugin.settings.lookbackDays))
-          .onChange(async (val) => {
-            const n = parseInt(val, 10);
-            if (!isNaN(n) && n >= 1 && n <= 90) {
-              this.plugin.settings.lookbackDays = n;
-              await this.plugin.saveSettings();
-            }
-          });
-        text.inputEl.type = "number";
-        text.inputEl.min = "1";
-        text.inputEl.max = "90";
-        // Clamp empty or out-of-range input on blur and re-sync the field so
-        // the displayed value never diverges from the persisted one.
-        text.inputEl.addEventListener("blur", () => {
-          const n = parseInt(text.inputEl.value, 10);
-          const clamped = isNaN(n)
-            ? this.plugin.settings.lookbackDays
-            : Math.min(90, Math.max(1, n));
-          if (clamped !== this.plugin.settings.lookbackDays) {
-            this.plugin.settings.lookbackDays = clamped;
-            void this.plugin.saveSettings();
-          }
-          text.setValue(String(this.plugin.settings.lookbackDays));
-        });
-      });
-
-    // No heading on the first group: Obsidian convention, and the community
-    // linter flags a literal "General" heading.
-    new Setting(containerEl).setName("Row display").setHeading();
-
-    new Setting(containerEl)
-      .setName("Row layout")
-      .setDesc(
-        "Two lines shows the folder path beneath the filename. One line drops the path to fit more entries on screen and moves the time onto the filename row; the full path is still available by hovering the filename."
-      )
-      .addDropdown((dd) =>
-        dd
-          .addOption("two-line", "Two lines (filename + path)")
-          .addOption("one-line", "One line (filename only)")
-          .setValue(this.plugin.settings.rowLayout)
-          .onChange(async (val) => {
-            this.plugin.settings.rowLayout = val as RowLayout;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("External edit indicator color")
-      .setDesc(
-        "Color of the dot shown next to files edited from outside Obsidian (filesystem writes, sync, plugins). Default is Anthropic orange."
-      )
-      .addColorPicker((picker) =>
-        picker
-          .setValue(this.plugin.settings.externalEditColor)
-          .onChange(async (val) => {
-            this.plugin.settings.externalEditColor = val;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("File size change indicator")
-      .setDesc(
-        "Show a subtle up/down chevron on each row indicating whether the file grew (green) or shrank (red) since its previous edit."
-      )
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.showSizeIndicator)
-          .onChange(async (val) => {
-            this.plugin.settings.showSizeIndicator = val;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("Size change threshold (KB)")
-      .setDesc(
-        "Minimum change, in KB, for a row to show the up/down indicator. Smaller changes are ignored. Recommended: 10."
-      )
-      .addText((text) => {
-        text
-          .setValue(String(this.plugin.settings.sizeDeltaThresholdKb))
-          .onChange(async (val) => {
-            const n = parseFloat(val);
-            if (!isNaN(n) && n >= 0) {
-              this.plugin.settings.sizeDeltaThresholdKb = n;
-              await this.plugin.saveSettings();
-            }
-          });
-        text.inputEl.type = "number";
-        text.inputEl.min = "0";
-        // Clamp invalid/negative input on blur and re-sync the field.
-        text.inputEl.addEventListener("blur", () => {
-          const n = parseFloat(text.inputEl.value);
-          const clamped =
-            isNaN(n) || n < 0
-              ? this.plugin.settings.sizeDeltaThresholdKb
-              : n;
-          if (clamped !== this.plugin.settings.sizeDeltaThresholdKb) {
-            this.plugin.settings.sizeDeltaThresholdKb = clamped;
-            void this.plugin.saveSettings();
-          }
-          text.setValue(String(this.plugin.settings.sizeDeltaThresholdKb));
-        });
-      });
-
-    new Setting(containerEl)
-      .setName("Copy absolute path affordance")
-      .setDesc(
-        "How to expose the 'copy absolute path to clipboard' action on each row. The button is an explicit, always-visible target; the folder-path text is a subtler invisible affordance. Use Both to expose both. One-line row layout always uses the button, since there is no path text to click."
-      )
-      .addDropdown((dd) =>
-        dd
-          .addOption("button", "Button above the time")
-          .addOption("path-text", "Folder-path text")
-          .addOption("both", "Both")
-          .setValue(this.plugin.settings.pathCopyAffordance)
-          .onChange(async (val) => {
-            this.plugin.settings.pathCopyAffordance =
-              val as PathCopyAffordance;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl).setName("Behavior").setHeading();
-
-    new Setting(containerEl)
-      .setName("Hover preview")
-      .setDesc(
-        "Show Obsidian's page preview popup when hovering an entry. Requires the Page Preview core plugin."
-      )
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.enableHoverPreview)
-          .onChange(async (val) => {
-            this.plugin.settings.enableHoverPreview = val;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl).setName("Filtering").setHeading();
-
-    this.addFolderListSetting(containerEl, {
-      name: "Background folders",
-      desc: "Folders hidden by default. Use the toggle in the panel header to show them temporarily. Useful for files that update often but you only check occasionally.",
-      getValue: () => this.plugin.settings.backgroundFolders,
-      setValue: async (v) => {
-        this.plugin.settings.backgroundFolders = v;
-        await this.plugin.saveSettings();
+  // Declarative settings (Obsidian 1.13+). Obsidian renders, indexes for
+  // search, and persists these; display() is deprecated and intentionally gone.
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [
+      // The first group carries no heading by convention. Lookback sits alone
+      // because it is the only setting that changes what the panel contains
+      // rather than how it is drawn.
+      {
+        name: "Lookback days",
+        desc: "How many days back to show.",
+        aliases: ["window", "range", "history"],
+        control: {
+          type: "number",
+          key: "lookbackDays",
+          defaultValue: DEFAULT_SETTINGS.lookbackDays,
+          min: 1,
+          max: 90,
+          validate: (v) =>
+            Number.isFinite(v) && v >= 1 && v <= 90
+              ? undefined
+              : "Enter a whole number between 1 and 90.",
+        },
       },
-      placeholder: "Type a folder path…",
-      datalistId: "recent-edits-background-folder-list",
-    });
-
-    this.addFolderListSetting(containerEl, {
-      name: "Excluded folders",
-      desc: `Folders hidden from the list completely. Dot-prefixed folders (${this.app.vault.configDir}, .trash) are always excluded.`,
-      getValue: () => this.plugin.settings.excludedFolders,
-      setValue: async (v) => {
-        this.plugin.settings.excludedFolders = v;
-        await this.plugin.saveSettings();
+      {
+        type: "group",
+        heading: "Row display",
+        items: [
+          {
+            name: "Row layout",
+            desc: "Two lines shows the folder path beneath the filename. One line drops the path to fit more entries on screen and moves the time onto the filename row; the full path is still available by hovering the filename.",
+            aliases: ["compact", "density", "one line", "two line"],
+            control: {
+              type: "dropdown",
+              key: "rowLayout",
+              defaultValue: DEFAULT_SETTINGS.rowLayout,
+              options: {
+                "two-line": "Two lines (filename + path)",
+                "one-line": "One line (filename only)",
+              },
+            },
+          },
+          {
+            name: "External edit indicator color",
+            desc: "Color of the dot shown next to files edited from outside Obsidian (filesystem writes, sync, plugins). Default is Anthropic orange.",
+            aliases: ["dot", "indicator"],
+            control: {
+              type: "color",
+              key: "externalEditColor",
+              defaultValue: DEFAULT_SETTINGS.externalEditColor,
+            },
+          },
+          {
+            name: "File size change indicator",
+            desc: "Show a subtle up/down chevron on each row indicating whether the file grew (green) or shrank (red) since its previous edit.",
+            aliases: ["chevron", "grew", "shrank"],
+            control: {
+              type: "toggle",
+              key: "showSizeIndicator",
+              defaultValue: DEFAULT_SETTINGS.showSizeIndicator,
+            },
+          },
+          {
+            name: "Size change threshold (KB)",
+            desc: "Minimum change, in KB, for a row to show the up/down indicator. Smaller changes are ignored.",
+            control: {
+              type: "number",
+              key: "sizeDeltaThresholdKb",
+              defaultValue: DEFAULT_SETTINGS.sizeDeltaThresholdKb,
+              min: 0,
+              step: "any",
+              validate: (v) =>
+                Number.isFinite(v) && v >= 0
+                  ? undefined
+                  : "Enter zero or a positive number.",
+            },
+          },
+          {
+            name: "Copy absolute path affordance",
+            desc: "How to expose the 'copy absolute path to clipboard' action on each row. The button is an explicit, always-visible target; the folder-path text is a subtler invisible affordance. Use Both to expose both. One-line row layout always uses the button, since there is no path text to click.",
+            aliases: ["clipboard", "path"],
+            control: {
+              type: "dropdown",
+              key: "pathCopyAffordance",
+              defaultValue: DEFAULT_SETTINGS.pathCopyAffordance,
+              options: {
+                button: "Button above the time",
+                "path-text": "Folder-path text",
+                both: "Both",
+              },
+            },
+          },
+        ],
       },
-      placeholder: "Type a folder path…",
-      datalistId: "recent-edits-excluded-folder-list",
-    });
-
-    this.addSupportSection(containerEl);
+      {
+        type: "group",
+        heading: "Behavior",
+        items: [
+          {
+            name: "Hover preview",
+            desc: "Show Obsidian's page preview popup when hovering an entry. Requires the Page Preview core plugin.",
+            aliases: ["popup", "peek"],
+            control: {
+              type: "toggle",
+              key: "enableHoverPreview",
+              defaultValue: DEFAULT_SETTINGS.enableHoverPreview,
+            },
+          },
+        ],
+      },
+      {
+        type: "group",
+        heading: "Filtering",
+        items: [
+          {
+            name: "Background folders",
+            desc: "Folders hidden by default. Use the toggle in the panel header to show them temporarily. Useful for files that update often but you only check occasionally.",
+            aliases: ["hidden", "noisy", "more"],
+            render: (setting) =>
+              this.renderFolderList(setting, {
+                getValue: () => this.plugin.settings.backgroundFolders,
+                setValue: async (v) => {
+                  this.plugin.settings.backgroundFolders = v;
+                  await this.plugin.saveSettings();
+                },
+                datalistId: "recent-edits-background-folder-list",
+              }),
+          },
+          {
+            name: "Excluded folders",
+            desc: `Folders hidden from the list completely. Dot-prefixed folders (${this.app.vault.configDir}, .trash) are always excluded.`,
+            aliases: ["ignore", "hide"],
+            render: (setting) =>
+              this.renderFolderList(setting, {
+                getValue: () => this.plugin.settings.excludedFolders,
+                setValue: async (v) => {
+                  this.plugin.settings.excludedFolders = v;
+                  await this.plugin.saveSettings();
+                },
+                datalistId: "recent-edits-excluded-folder-list",
+              }),
+          },
+        ],
+      },
+      ...this.supportGroup(),
+    ];
   }
 
-  // Last group, deliberately. The funding URL is read from the manifest so
-  // there's one source of truth with the community-directory listing.
-  //
-  // Ko-fi publishes a drop-in widget script, but a plugin must not load or run
-  // remote code: community review rejects it, and it would put a third-party
-  // network request inside the settings pane. A plain link to the same page
-  // reaches the same destination and touches the network only on click.
-  private addSupportSection(containerEl: HTMLElement): void {
-    // fundingUrl is a valid manifest field but isn't on the typed
-    // PluginManifest, and it may be a bare string or a label->url map.
+  // Settings live on plugin.settings, but the plugin's own persistData() also
+  // writes the private _editSources / _editTimes / _pinned maps in the same
+  // data.json. The inherited implementation would call saveData() with the
+  // settings object alone and drop all of them, taking every pin and
+  // classification with it. Route both directions through the plugin instead.
+  getControlValue(key: string): unknown {
+    return (this.plugin.settings as unknown as Record<string, unknown>)[key];
+  }
+
+  async setControlValue(key: string, value: unknown): Promise<void> {
+    (this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
+    await this.plugin.saveSettings();
+  }
+
+  // Last group, and omitted entirely when the manifest carries no fundingUrl.
+  private supportGroup(): SettingDefinitionItem[] {
     const funding = (
       this.plugin.manifest as unknown as {
         fundingUrl?: string | Record<string, string>;
@@ -1643,44 +1618,53 @@ class RecentEditsSettingTab extends PluginSettingTab {
       typeof funding === "string"
         ? funding
         : Object.values(funding ?? {}).find((v) => typeof v === "string");
-    if (!url) return;
+    if (!url) return [];
 
-    new Setting(containerEl).setName("Support").setHeading();
-
-    const setting = new Setting(containerEl)
-      .setName("Buy me a coffee")
-      .setDesc(
-        "Recent Edits is free and always will be. If it earns a place in your daily workflow, a coffee helps keep it maintained."
-      );
-
-    // A real anchor rather than a button: middle-click and "copy link address"
-    // work, and Obsidian handles the external navigation itself.
-    const link = setting.controlEl.createEl("a", {
-      cls: "recent-edits-kofi",
-      href: url,
-      attr: {
-        target: "_blank",
-        rel: "noopener noreferrer",
-        "aria-label": "Support Recent Edits on Ko-fi",
+    return [
+      {
+        type: "group",
+        heading: "Support",
+        items: [
+          {
+            name: "Buy me a coffee",
+            desc: "Recent Edits is free and always will be. If it earns a place in your daily workflow, a coffee helps keep it maintained.",
+            aliases: ["donate", "ko-fi", "kofi", "support"],
+            render: (setting) => {
+              // A real anchor rather than a button: middle-click and
+              // "copy link address" work, and Obsidian handles navigation.
+              const link = setting.controlEl.createEl("a", {
+                cls: "recent-edits-kofi",
+                href: url,
+                attr: {
+                  target: "_blank",
+                  rel: "noopener noreferrer",
+                  "aria-label": "Support Recent Edits on Ko-fi",
+                },
+              });
+              link.setAttribute("title", "Buy me a coffee at ko-fi.com");
+            },
+          },
+        ],
       },
-    });
-    link.setAttribute("title", "Buy me a coffee at ko-fi.com");
+    ];
   }
 
-  private addFolderListSetting(
-    containerEl: HTMLElement,
+  // Chip picker for a string[] setting. A `render` escape hatch rather than a
+  // declarative control: no built-in control persists an array of folder
+  // paths, and `list` would mean rebuilding a working UI. Note that `render`
+  // rows do NOT auto-save, so every mutation goes through opts.setValue.
+  private renderFolderList(
+    setting: Setting,
     opts: {
-      name: string;
-      desc: string;
       getValue: () => string[];
       setValue: (v: string[]) => Promise<void>;
-      placeholder: string;
       datalistId: string;
     }
   ): void {
-    new Setting(containerEl).setName(opts.name).setDesc(opts.desc);
-
-    const wrapper = containerEl.createDiv({
+    // The picker is full-width, so it hangs off settingEl beneath the name and
+    // description rather than squeezing into the right-hand control slot.
+    setting.settingEl.addClass("recent-edits-folder-setting");
+    const wrapper = setting.settingEl.createDiv({
       cls: "recent-edits-folder-list",
     });
 
@@ -1722,7 +1706,7 @@ class RecentEditsSettingTab extends PluginSettingTab {
     const input = inputWrapper.createEl("input", {
       type: "text",
       cls: "recent-edits-folder-input",
-      attr: { placeholder: opts.placeholder },
+      attr: { placeholder: "Type a folder path…" },
     });
 
     const datalist = inputWrapper.createEl("datalist", {
