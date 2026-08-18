@@ -1012,7 +1012,9 @@ class RecentEditsView extends ItemView {
         text: "No pinned notes. Right-click a row, or use its pin.",
       });
     } else {
-      for (const f of files) this.renderFileRow(list, f);
+      for (const f of files) {
+        this.renderFileRow(list, f, { relativeStamp: true });
+      }
       // Opening a file from the drawer dismisses it unless it's locked open.
       list.addEventListener("click", () => {
         if (!this.pinDrawerLocked) this.setPinDrawerOpen(false);
@@ -1251,7 +1253,13 @@ class RecentEditsView extends ItemView {
     }
   }
 
-  private renderFileRow(parent: HTMLElement, file: TFile) {
+  // `relativeStamp` is set for rows that sit outside a day group (the pinned
+  // drawer), where a bare clock time would imply the edit happened today.
+  private renderFileRow(
+    parent: HTMLElement,
+    file: TFile,
+    opts: { relativeStamp?: boolean } = {}
+  ) {
     const row = parent.createDiv({ cls: "recent-edits-row" });
     if (this.plugin.isExternalEdit(file)) {
       row.addClass("is-external-edit");
@@ -1383,10 +1391,20 @@ class RecentEditsView extends ItemView {
         }
       });
     }
-    meta.createSpan({
+    const stamp = new Date(this.plugin.effectiveMtime(file));
+    const timeEl = meta.createSpan({
       cls: "recent-edits-row-time",
-      text: formatTime12h(new Date(this.plugin.effectiveMtime(file))),
+      text: opts.relativeStamp
+        ? formatRelativeStamp(stamp)
+        : formatTime12h(stamp),
     });
+    // The abbreviated stamp loses detail, so keep the full one on hover.
+    if (opts.relativeStamp) {
+      timeEl.setAttribute(
+        "title",
+        `${formatDayKey(stamp)} ${formatTime12h(stamp)}`
+      );
+    }
 
     row.addEventListener("click", (evt) => {
       const forceNewTab = evt.metaKey || evt.ctrlKey;
@@ -1713,8 +1731,31 @@ function formatDayLabel(d: Date): string {
   const diff = Math.round((today.getTime() - d.getTime()) / 86400000);
   if (diff === 0) return "Today";
   if (diff === 1) return "Yesterday";
-  const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
-  return `${formatDayKey(d)} (${weekday})`;
+  return `${formatDayKey(d)} (${WEEKDAYS[d.getDay()]})`;
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+// Timestamp label for a row that carries no day header of its own (the pinned
+// drawer). A bare clock time there reads as "today" no matter how old the edit
+// is, so only today keeps the time. Weekday names are unambiguous for a week;
+// past that they'd be misleading in a new way, so fall back to a date. Pinned
+// notes are not lookback-bounded, so the old case is a real one, not a corner.
+function formatRelativeStamp(d: Date): string {
+  const today = startOfLocalDay(new Date());
+  const diff = Math.round(
+    (today.getTime() - startOfLocalDay(d).getTime()) / 86400000
+  );
+  if (diff === 0) return formatTime12h(d);
+  if (diff > 0 && diff < 7) return WEEKDAYS[d.getDay()];
+  const stamp = `${MONTHS[d.getMonth()]} ${d.getDate()}`;
+  return d.getFullYear() === today.getFullYear()
+    ? stamp
+    : `${stamp}, ${d.getFullYear()}`;
 }
 
 function formatTime12h(d: Date): string {
