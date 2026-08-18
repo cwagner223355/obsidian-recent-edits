@@ -1510,6 +1510,10 @@ class RecentEditsSettingTab extends PluginSettingTab {
           {
             name: "Size change threshold (KB)",
             desc: "Minimum change, in KB, for a row to show the up/down indicator. Smaller changes are ignored.",
+            // Meaningless while the indicator is off. Re-evaluated by the
+            // refreshDomState() call in setControlValue, which is a CSS-state
+            // toggle rather than a rebuild, so the pane does not jump.
+            visible: () => this.plugin.settings.showSizeIndicator,
             control: {
               type: "number",
               key: "sizeDeltaThresholdKb",
@@ -1605,6 +1609,10 @@ class RecentEditsSettingTab extends PluginSettingTab {
   async setControlValue(key: string, value: unknown): Promise<void> {
     (this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
     await this.plugin.saveSettings();
+    // Any setting may gate another's `visible` or `disabled` predicate. This
+    // only toggles CSS state in place, so running it after every change keeps
+    // predicates honest without a rebuild or a scroll jump.
+    this.refreshDomState();
   }
 
   // Last group, and omitted entirely when the manifest carries no fundingUrl.
