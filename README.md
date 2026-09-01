@@ -102,6 +102,7 @@ Your choice persists. Clicking an individual day still overrides it for that ses
 | Size change threshold (KB) | number | `10` | Minimum change before the indicator appears. Smaller changes are ignored. |
 | Copy absolute path affordance | dropdown | Button above the time | Which control copies a row's absolute path: a button, the folder-path text, or both. Desktop only. |
 | Hover preview | toggle | off | Show Obsidian's page preview on hover. Requires the Page Preview core plugin. |
+| Ignore plugin-declared writes | toggle | on | Leave an entry untouched when a plugin announces its write as housekeeping via `recent-edits:plugin-write`. |
 | Background folders | folder list | `[]` | Hidden by default, revealed by the **More** pill. |
 | Excluded folders | folder list | `[]` | Hidden completely. |
 
@@ -125,8 +126,22 @@ A file is marked as an external edit only when none of those internal signals fi
 Treat the dot as an indicator, not a guarantee. It can be fooled by:
 
 - Edits arriving via Obsidian Sync from another device, particularly when the receiving device was closed at the time of the original edit
-- Plugin background writes that never open the file in a workspace leaf, which is rare in practice
+- Plugin background writes that never open the file in a workspace leaf, which is rare in practice (a plugin can declare these; see below)
 - Files modified before you installed the plugin, which stay unclassified until something touches them again
+
+### Plugin-declared writes
+
+Some plugins rewrite notes as housekeeping: reordering frontmatter keys, inserting scaffold fields, normalizing YAML. Those are not edits, but from the outside they look exactly like one. Recent Edits offers a small contract so a plugin can say so.
+
+Fire this just before writing:
+
+```ts
+app.workspace.trigger("recent-edits:plugin-write", { path: file.path });
+```
+
+Recent Edits holds the path for five seconds. When the matching `modify` arrives, the entry is left exactly as it was: no time bump, no external-edit dot, no size delta. A note with no recorded edit yet is pinned to its pre-write time so it doesn't surface. Fire it only for writes the user did not ask for on that specific note; a write the user triggered deliberately is an edit and should stay visible.
+
+Controlled by **Ignore plugin-declared writes** in settings, on by default. First adopter: Foldable Frontmatter Groups.
 
 ## Support
 

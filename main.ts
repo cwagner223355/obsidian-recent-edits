@@ -1,20 +1,21 @@
 import {
   App,
+  Events,
   FileSystemAdapter,
   ItemView,
   Menu,
   Modal,
+  normalizePath,
   Notice,
   Platform,
   Plugin,
   PluginSettingTab,
+  setIcon,
   Setting,
   SettingDefinitionItem,
   TFile,
   TFolder,
   WorkspaceLeaf,
-  normalizePath,
-  setIcon,
 } from "obsidian";
 
 type PathCopyAffordance = "button" | "path-text" | "both";
@@ -32,6 +33,9 @@ interface RecentEditsSettings {
   sizeDeltaThresholdKb: number;
   dayOpenMode: DayOpenMode;
   rowLayout: RowLayout;
+  // Honor the recent-edits:plugin-write contract (see onload). Off means every
+  // modify is classified, plugin housekeeping included.
+  ignorePluginWrites: boolean;
 }
 
 const DEFAULT_SETTINGS: RecentEditsSettings = {
@@ -45,6 +49,7 @@ const DEFAULT_SETTINGS: RecentEditsSettings = {
   sizeDeltaThresholdKb: 10,
   dayOpenMode: "open",
   rowLayout: "two-line",
+  ignorePluginWrites: true,
 };
 
 const VIEW_TYPE_RECENT_EDITS = "recent-edits-view";
@@ -60,6 +65,10 @@ const ACTIVE_LOCAL_FILE_WINDOW_MS = 5 * 60 * 1000;
 // a file from mobile shortly after mobile edited it.
 const EXTERNAL_SYNC_GUARD_MS = 60_000;
 const FILE_OPEN_WINDOW_MS = 2000;
+// How long a plugin-declared write announcement stays valid. processFrontMatter
+// and vault.modify land within milliseconds; the window only needs to outlast
+// a busy event loop.
+const PLUGIN_WRITE_WINDOW_MS = 5000;
 const CREATE_CLASSIFY_DELAY_MS = 800;
 // Hover-intent for the pinned drawer: long enough that sweeping the cursor
 // past the button on the way to a row doesn't open it, short enough that a
@@ -83,6 +92,10 @@ export default class RecentEditsPlugin extends Plugin {
   sizeDeltas: Record<string, "up" | "down"> = {};
   private editorChangeTimes = new Map<string, number>();
   private recentFileOpens = new Map<string, number>();
+  // Paths a plugin has declared it is about to rewrite as housekeeping, with
+  // the pre-write mtime captured at declaration time. Consumed by the next
+  // modify on that path; pruned with the other signal maps.
+  private pluginWrites = new Map<string, { at: number; mtime: number }>();
   private saveDataTimer: number | null = null;
   private midnightTimer: number | null = null;
   private createTimers = new Set<number>();
@@ -128,6 +141,33 @@ export default class RecentEditsPlugin extends Plugin {
           this.recentFileOpens.set(file.path, Date.now());
         }
       })
+    );
+
+    // Public contract. Any plugin can declare that its next write to a path
+    // is housekeeping rather than a user edit by firing
+    //   app.workspace.trigger("recent-edits:plugin-write", { path })
+    // just before writing. The path is held for PLUGIN_WRITE_WINDOW_MS and
+    // the matching modify passes through untouched: no source, no time bump,
+    // no dot, no size delta. The pre-write mtime is captured here so a file
+    // with no canonical time yet can be pinned to it instead of floating to
+    // the top on the stat.mtime fallback. First adopter: Foldable Frontmatter
+    // Groups (reconcile, create-time defaults, cleanup scrubs, migrations).
+    // Workspace.on narrows the event name to Obsidian's own literals, so a
+    // custom name has to go through the Events base overload.
+    this.registerEvent(
+      (this.app.workspace as Events).on(
+        "recent-edits:plugin-write",
+        (...data: unknown[]) => {
+          const payload = data[0] as { path?: unknown } | undefined;
+          const path = payload?.path;
+          if (typeof path !== "string" || !path) return;
+          const file = this.app.vault.getFileByPath(path);
+          this.pluginWrites.set(path, {
+            at: Date.now(),
+            mtime: file?.stat.mtime ?? 0,
+          });
+        }
+      )
     );
 
     // Register the create handler at layout-ready, not in onload. Obsidian
@@ -301,6 +341,27 @@ export default class RecentEditsPlugin extends Plugin {
   }
 
   private classifyEdit(file: TFile, isCreate: boolean) {
+    // Plugin-declared write: housekeeping, not an edit. Leave source and
+    // canonical time alone. If there is no canonical time yet, pin one to the
+    // pre-write mtime so the row doesn't surface via the stat.mtime fallback.
+    // Refresh the size baseline quietly so the next real edit's delta is
+    // measured from the file as it is now. Creates are never plugin
+    // housekeeping (a plugin that creates a note made a deliverable), so a
+    // stray announcement can't swallow a create classification.
+    if (!isCreate && this.settings.ignorePluginWrites) {
+      const declared = this.pluginWrites.get(file.path);
+      if (declared) {
+        this.pluginWrites.delete(file.path);
+        if (Date.now() - declared.at < PLUGIN_WRITE_WINDOW_MS) {
+          if (this.editTimes[file.path] === undefined && declared.mtime > 0) {
+            this.editTimes[file.path] = declared.mtime;
+          }
+          this.editSizes[file.path] = file.stat.size;
+          this.scheduleSaveData();
+          return;
+        }
+      }
+    }
     const lastChange = this.editorChangeTimes.get(file.path) ?? 0;
     const recentEditorChange =
       Date.now() - lastChange < EDITOR_CHANGE_WINDOW_MS;
@@ -575,6 +636,9 @@ export default class RecentEditsPlugin extends Plugin {
     }
     for (const [path, t] of this.recentFileOpens) {
       if (now - t > FILE_OPEN_WINDOW_MS) this.recentFileOpens.delete(path);
+    }
+    for (const [path, e] of this.pluginWrites) {
+      if (now - e.at > PLUGIN_WRITE_WINDOW_MS) this.pluginWrites.delete(path);
     }
   }
 
@@ -1555,6 +1619,16 @@ class RecentEditsSettingTab extends PluginSettingTab {
               type: "toggle",
               key: "enableHoverPreview",
               defaultValue: DEFAULT_SETTINGS.enableHoverPreview,
+            },
+          },
+          {
+            name: "Ignore plugin-declared writes",
+            desc: "When a plugin announces that it is about to rewrite a note as housekeeping (reordering or scaffolding frontmatter, for example), leave the entry as it was: no time bump, no dot. Plugins opt in by firing the recent-edits:plugin-write event; see the README.",
+            aliases: ["housekeeping", "frontmatter", "reconcile", "announce", "plugin"],
+            control: {
+              type: "toggle",
+              key: "ignorePluginWrites",
+              defaultValue: DEFAULT_SETTINGS.ignorePluginWrites,
             },
           },
         ],
