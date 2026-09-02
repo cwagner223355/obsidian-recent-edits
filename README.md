@@ -143,6 +143,8 @@ Recent Edits holds the path for five seconds. When the matching `modify` arrives
 
 Controlled by **Ignore plugin-declared writes** in settings, on by default. First adopter: Foldable Frontmatter Groups.
 
+The full contract, including when not to declare and how to listen for the event in your own plugin, is in [docs/plugin-write-contract.md](docs/plugin-write-contract.md).
+
 ## Support
 
 Recent Edits is free and always will be. If it earns a place in your daily workflow, a coffee helps keep it maintained. There's a link in the plugin's settings too, under **Support**.
