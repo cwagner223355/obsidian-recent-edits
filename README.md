@@ -77,6 +77,8 @@ Because pinned notes can span any stretch of time, their rows show a relative st
 
 Both lists take folder paths with autocomplete from your vault.
 
+**Excluded filename patterns** go a step further than folders. Each entry is a regular expression tested against a file's full vault path, and any match hides the file completely. Reach for it when the thing you want gone is a filename *shape* that recurs across many folders, where a folder list can't help, for example `\.signals\.md$` to hide every `*.signals.md` sidecar an external tool scatters through the vault. Patterns are validated as you add them, so an invalid one is rejected rather than silently hiding nothing.
+
 ## Fitting it to your screen
 
 **Row layout** chooses between two lines per row (filename plus folder path) and one line (filename only). One line fits noticeably more on screen; the full path is still there when you hover the filename.
@@ -105,6 +107,7 @@ Your choice persists. Clicking an individual day still overrides it for that ses
 | Ignore plugin-declared writes | toggle | on | Leave an entry untouched when a plugin announces its write as housekeeping via `recent-edits:plugin-write`. |
 | Background folders | folder list | `[]` | Hidden by default, revealed by the **More** pill. |
 | Excluded folders | folder list | `[]` | Hidden completely. |
+| Excluded filename patterns | regex list | `[]` | Regular expressions tested against each file's vault path; any match hides the file completely. |
 
 Settings are grouped into **Row display**, **Behavior**, **Filtering**, and **Support**.
 

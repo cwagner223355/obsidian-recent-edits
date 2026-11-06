@@ -25,6 +25,11 @@ type RowLayout = "two-line" | "one-line";
 interface RecentEditsSettings {
   excludedFolders: string[];
   backgroundFolders: string[];
+  // Regular expressions tested against each file's vault path. A file is
+  // excluded completely if any pattern matches. Folder filters can't target a
+  // filename shape (e.g. *.signals.md) that recurs across many folders; this
+  // can.
+  excludedPatterns: string[];
   lookbackDays: number;
   enableHoverPreview: boolean;
   externalEditColor: string;
@@ -41,6 +46,7 @@ interface RecentEditsSettings {
 const DEFAULT_SETTINGS: RecentEditsSettings = {
   excludedFolders: [],
   backgroundFolders: [],
+  excludedPatterns: [],
   lookbackDays: 7,
   enableHoverPreview: false,
   externalEditColor: "#D97757",
@@ -910,10 +916,23 @@ class RecentEditsView extends ItemView {
   }
 
   private getRecentFiles(): DayGroup[] {
-    const { lookbackDays, excludedFolders, backgroundFolders } =
+    const { lookbackDays, excludedFolders, backgroundFolders, excludedPatterns } =
       this.plugin.settings;
     const cutoff = Date.now() - lookbackDays * 86400000;
     const showBg = this.showBackgroundFolders;
+
+    // Compile the exclude patterns once per render. An invalid pattern is
+    // skipped rather than failing the whole filter; the settings tab validates
+    // on entry, so this only guards a hand-edited data.json.
+    const excludeRes: RegExp[] = [];
+    for (const p of excludedPatterns) {
+      if (!p) continue;
+      try {
+        excludeRes.push(new RegExp(p));
+      } catch {
+        console.warn(`Recent Edits: ignoring invalid excluded pattern: ${p}`);
+      }
+    }
 
     const matchesFolder = (path: string, folder: string): boolean => {
       const norm = folder.replace(/^\/+|\/+$/g, "");
@@ -936,6 +955,10 @@ class RecentEditsView extends ItemView {
 
       for (const ex of excludedFolders) {
         if (matchesFolder(f.path, ex)) return false;
+      }
+
+      for (const re of excludeRes) {
+        if (re.test(f.path)) return false;
       }
 
       if (!showBg) {
@@ -1665,6 +1688,19 @@ class RecentEditsSettingTab extends PluginSettingTab {
                 datalistId: "recent-edits-excluded-folder-list",
               }),
           },
+          {
+            name: "Excluded filename patterns",
+            desc: "Regular expressions tested against each file's vault path; a file is hidden completely if any pattern matches. One per chip. Example: \\.signals\\.md$ hides every file whose name ends in .signals.md, wherever it lives.",
+            aliases: ["regex", "pattern", "filename", "ignore", "hide"],
+            render: (setting) =>
+              this.renderPatternList(setting, {
+                getValue: () => this.plugin.settings.excludedPatterns,
+                setValue: async (v) => {
+                  this.plugin.settings.excludedPatterns = v;
+                  await this.plugin.saveSettings();
+                },
+              }),
+          },
         ],
       },
       ...this.supportGroup(),
@@ -1817,6 +1853,96 @@ class RecentEditsSettingTab extends PluginSettingTab {
       if (!val || val === "/") return;
       if (!opts.getValue().includes(val)) {
         await opts.setValue([...opts.getValue(), val]);
+        renderChips();
+      }
+      input.value = "";
+      input.focus();
+    };
+    addBtn.addEventListener("click", () => { void addCurrent(); });
+    input.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter") {
+        evt.preventDefault();
+        void addCurrent();
+      }
+    });
+  }
+
+  // Chip picker for a string[] of regex patterns matched against file paths.
+  // Mirrors renderFolderList but drops the folder datalist and path
+  // normalization, and validates each entry as a RegExp before accepting it so
+  // a bad pattern is rejected at the point of entry rather than silently
+  // hiding nothing (or everything). Like renderFolderList, `render` rows do NOT
+  // auto-save, so every mutation goes through opts.setValue.
+  private renderPatternList(
+    setting: Setting,
+    opts: {
+      getValue: () => string[];
+      setValue: (v: string[]) => Promise<void>;
+    }
+  ): void {
+    setting.settingEl.addClass("recent-edits-folder-setting");
+    const wrapper = setting.settingEl.createDiv({
+      cls: "recent-edits-folder-list",
+    });
+
+    const chipContainer = wrapper.createDiv({
+      cls: "recent-edits-chip-container",
+    });
+
+    const renderChips = () => {
+      chipContainer.empty();
+      const values = opts.getValue();
+      if (values.length === 0) {
+        chipContainer.createSpan({
+          cls: "recent-edits-chip-empty",
+          text: "None.",
+        });
+        return;
+      }
+      for (const pattern of values) {
+        const chip = chipContainer.createSpan({ cls: "recent-edits-chip" });
+        chip.createSpan({
+          cls: "recent-edits-chip-label",
+          text: pattern,
+        });
+        const x = chip.createSpan({
+          cls: "recent-edits-chip-x",
+          text: "×",
+        });
+        x.setAttribute("aria-label", `Remove ${pattern}`);
+        x.addEventListener("click", () => {
+          void opts
+            .setValue(opts.getValue().filter((p) => p !== pattern))
+            .then(() => renderChips());
+        });
+      }
+    };
+    renderChips();
+
+    const inputWrapper = wrapper.createDiv({
+      cls: "recent-edits-folder-input-wrapper",
+    });
+    const input = inputWrapper.createEl("input", {
+      type: "text",
+      cls: "recent-edits-folder-input",
+      attr: { placeholder: "Regex, e.g. \\.signals\\.md$" },
+    });
+
+    const addBtn = inputWrapper.createEl("button", {
+      cls: "recent-edits-add-btn mod-cta",
+      text: "Add",
+    });
+    const addCurrent = async () => {
+      const trimmed = input.value.trim();
+      if (!trimmed) return;
+      try {
+        new RegExp(trimmed);
+      } catch (e) {
+        new Notice(`Recent Edits: invalid regex — ${(e as Error).message}`);
+        return;
+      }
+      if (!opts.getValue().includes(trimmed)) {
+        await opts.setValue([...opts.getValue(), trimmed]);
         renderChips();
       }
       input.value = "";
